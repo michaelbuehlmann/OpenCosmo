@@ -11,6 +11,8 @@ from .spatial import make_box, make_cone, make_skybox
 
 __version__ = "1.2.3"
 
+from . import remote
+
 __all__ = [
     "write",
     "col",
@@ -23,5 +25,6 @@ __all__ = [
     "make_box",
     "make_cone",
     "make_skybox",
+    "remote",
     "__version__",
 ]

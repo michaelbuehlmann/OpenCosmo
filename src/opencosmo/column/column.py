@@ -9,10 +9,12 @@ from typing import (
     Any,
     Callable,
     Iterable,
+    Literal,
     Optional,
     Protocol,
     Self,
     Union,
+    cast,
 )
 
 import astropy.units as u  # type: ignore
@@ -615,6 +617,33 @@ class ColumnMask:
     def requires(self):
         return {self.column_name}
 
+    @property
+    def comparison_operator(
+        self,
+    ) -> Literal["eq", "ne", "gt", "ge", "lt", "le", "isin"]:
+        """
+        Stable name for the comparison operation represented by this mask.
+
+        This is intentionally small and mirrors the operations that can be
+        constructed through the public Column API.
+        """
+        operator_names = {
+            op.eq: "eq",
+            op.ne: "ne",
+            op.gt: "gt",
+            op.ge: "ge",
+            op.lt: "lt",
+            op.le: "le",
+            np.isin: "isin",
+        }
+        try:
+            return cast(
+                "Literal['eq', 'ne', 'gt', 'ge', 'lt', 'le', 'isin']",
+                operator_names[self.operator],
+            )
+        except KeyError as exc:
+            raise ValueError("Unsupported column mask operator") from exc
+
     def apply(self, column: u.Quantity | np.ndarray) -> np.ndarray:
         """
         mask the dataset based on the mask.
@@ -635,10 +664,10 @@ class ColumnMask:
         return self.operator(column, self.value)  # type: ignore
 
     def __and__(self, other: Self | CompoundColumnMask):
-        return CompoundColumnMask(self, other, lambda left, right: left & right)
+        return CompoundColumnMask(self, other, lambda left, right: left & right, "and")
 
     def __or__(self, other: Self | CompoundColumnMask):
-        return CompoundColumnMask(self, other, lambda left, right: left | right)
+        return CompoundColumnMask(self, other, lambda left, right: left | right, "or")
 
 
 class CompoundColumnMask:
@@ -647,10 +676,12 @@ class CompoundColumnMask:
         left: ColumnMask | Self,
         right: ColumnMask | Self,
         op: Callable[[np.ndarray, np.ndarray], np.ndarray],
+        operator_name: str,
     ):
         self.__left = left
         self.__right = right
         self.__op = op
+        self.__operator_name = operator_name
 
     @property
     def requires(self):
@@ -659,11 +690,23 @@ class CompoundColumnMask:
         columns |= self.__right.requires
         return columns
 
+    @property
+    def left(self):
+        return self.__left
+
+    @property
+    def right(self):
+        return self.__right
+
+    @property
+    def compound_operator(self):
+        return self.__operator_name
+
     def __and__(self, other: ColumnMask | Self):
-        return CompoundColumnMask(self, other, lambda left, right: left & right)
+        return CompoundColumnMask(self, other, lambda left, right: left & right, "and")
 
     def __or__(self, other: ColumnMask | Self):
-        return CompoundColumnMask(self, other, lambda left, right: left | right)
+        return CompoundColumnMask(self, other, lambda left, right: left | right, "or")
 
     def apply(self, data):
         left_mask = self.__left.apply(data)
