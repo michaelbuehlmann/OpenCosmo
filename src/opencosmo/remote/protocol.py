@@ -9,12 +9,15 @@ PROTOCOL_VERSION: Literal["1.0"] = "1.0"
 ComparisonOperator: TypeAlias = Literal["eq", "ne", "gt", "ge", "lt", "le", "isin"]
 CompoundOperator: TypeAlias = Literal["and", "or"]
 TakePosition: TypeAlias = Literal["start", "end", "random"]
+RemoteQueryProduct: TypeAlias = Literal["snapshot", "lightcone"]
 
 
 class RemoteQuerySource(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     remote_dataset: str
+    product: RemoteQueryProduct
+    steps: tuple[int, ...]
     catalogs: tuple[str, ...]
     open_kwargs: dict[str, Any] = Field(default_factory=dict)
 
@@ -22,6 +25,10 @@ class RemoteQuerySource(BaseModel):
     def validate_source(self):
         if not self.remote_dataset:
             raise ValueError("remote_dataset must not be empty")
+        if not self.steps:
+            raise ValueError("steps must not be empty")
+        if any(step <= 0 for step in self.steps):
+            raise ValueError("steps must be positive integers")
         if not self.catalogs:
             raise ValueError("catalogs must not be empty")
         return self
@@ -137,7 +144,7 @@ RemoteOperation: TypeAlias = Annotated[
 
 
 class RemoteQueryRequest(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     protocol_version: Literal["1.0"] = PROTOCOL_VERSION
     client_version: str

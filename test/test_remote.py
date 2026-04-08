@@ -5,6 +5,7 @@ from pathlib import Path
 
 import astropy.units as u
 import pytest
+from pydantic import ValidationError
 
 import opencosmo as oc
 from opencosmo.remote.execution import execute_remote_query
@@ -13,7 +14,12 @@ from opencosmo.remote.protocol import RemoteQueryRequest, RemoteQueryStatus
 
 def test_remote_query_serializes_dataset_operations():
     query = (
-        oc.remote.open("FrontierE", ["halo_properties"])
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties"],
+            product="snapshot",
+            steps=205,
+        )
         .filter((oc.col("fof_halo_mass") > 1e13) & (oc.col("sod_halo_cdelta") < 10))
         .take(1000, at="random")
         .select("fof_halo_mass", "sod_halo_cdelta")
@@ -21,7 +27,9 @@ def test_remote_query_serializes_dataset_operations():
 
     request = RemoteQueryRequest.model_validate(query.serialize())
 
-    assert request.source.remote_dataset == "FrontierE"
+    assert request.source.remote_dataset == "Frontier-E"
+    assert request.source.product == "snapshot"
+    assert request.source.steps == (205,)
     assert request.source.catalogs == ("halo_properties",)
     assert [operation.type for operation in request.operations] == [
         "filter",
@@ -34,7 +42,12 @@ def test_remote_query_serializes_dataset_operations():
 
 def test_remote_query_serializes_structure_collection_select_and_units():
     query = (
-        oc.remote.open("FrontierE", ["halo_properties", "halo_particles"])
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties", "halo_particles"],
+            product="snapshot",
+            steps=205,
+        )
         .filter(oc.col("fof_halo_mass") > 1e13)
         .select(
             halo_properties=["fof_halo_mass", "sod_halo_cdelta"],
@@ -60,6 +73,26 @@ def test_remote_query_serializes_structure_collection_select_and_units():
     assert units.convention == "physical"
     assert units.dataset_conversions["halo_properties"].columns["fof_halo_mass"] == "kg"
     assert units.dataset_conversions["dm_particles"].conversions["Mpc"] == "km"
+
+
+def test_remote_query_request_rejects_client_supplied_paths():
+    request = (
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties"],
+            product="snapshot",
+            steps=205,
+        )
+        .take(10)
+        .serialize()
+    )
+
+    with pytest.raises(ValidationError):
+        RemoteQueryRequest.model_validate(request | {"paths": ["/etc/passwd"]})
+
+    source_with_path = request["source"] | {"path": "/etc/passwd"}
+    with pytest.raises(ValidationError):
+        RemoteQueryRequest.model_validate(request | {"source": source_with_path})
 
 
 def test_remote_auth_placeholder_token_flow():
@@ -117,7 +150,12 @@ def test_remote_client_submit_status_and_result_download(monkeypatch, tmp_path):
         base_url="https://example.test",
         result_cache_dir=tmp_path,
     )
-    response = oc.remote.open("FrontierE", ["halo_properties"]).get(profile=profile)
+    response = oc.remote.open(
+        "Frontier-E",
+        ["halo_properties"],
+        product="snapshot",
+        steps=205,
+    ).get(profile=profile)
     assert response.get_status().status == "succeeded"
     assert response.get_results() == b"fake-hdf5"
     assert calls == [
@@ -153,24 +191,35 @@ def test_execute_remote_query_replays_through_existing_open_and_write(monkeypatc
     monkeypatch.setattr(oc, "open", fake_open)
     monkeypatch.setattr(oc, "write", fake_write)
 
-    request = (
-        oc.remote.open("FrontierE", ["halo_properties"], synth_cores=True)
+    request_data = (
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties"],
+            product="snapshot",
+            steps=205,
+        )
         .filter(oc.col("fof_halo_mass") > 1e13)
         .take(10, at="start")
         .select("fof_halo_mass")
         .into_request()
+        .model_dump(mode="python")
     )
+    request_data["source"]["open_kwargs"] = {"synth_cores": True}
+    request = RemoteQueryRequest.model_validate(request_data)
 
     output_path = execute_remote_query(
         request,
-        lambda source: [f"{source.remote_dataset}_{source.catalogs[0]}.hdf5"],
+        lambda source: [
+            f"{source.remote_dataset}_{source.product}_"
+            f"{source.steps[0]}_{source.catalogs[0]}.hdf5"
+        ],
         "result.hdf5",
     )
 
     assert output_path == Path("result.hdf5")
     assert events[0] == (
         "open",
-        ("FrontierE_halo_properties.hdf5",),
+        ("Frontier-E_snapshot_205_halo_properties.hdf5",),
         {"synth_cores": True},
     )
     assert events[-1] == ("write", Path("result.hdf5"), True)

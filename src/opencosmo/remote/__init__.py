@@ -11,6 +11,7 @@ from .client import (
 from .execution import execute_remote_query, replay_operation
 from .protocol import (
     RemoteQueryAccepted,
+    RemoteQueryProduct,
     RemoteQueryRequest,
     RemoteQuerySource,
     RemoteQueryStatus,
@@ -24,6 +25,7 @@ __all__ = [
     "RemoteProfile",
     "RemoteQuery",
     "RemoteQueryAccepted",
+    "RemoteQueryProduct",
     "RemoteQueryRequest",
     "RemoteQueryResponse",
     "RemoteQuerySource",

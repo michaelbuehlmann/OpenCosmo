@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import copy
 from functools import reduce
 from importlib.metadata import PackageNotFoundError, version
-from typing import TYPE_CHECKING, Any, Iterable, Literal, Optional, cast
+from typing import TYPE_CHECKING, Iterable, Literal, Optional, cast
 
 import astropy.units as u
 import numpy as np
@@ -32,19 +32,26 @@ from opencosmo.remote.protocol import (
 
 if TYPE_CHECKING:
     from opencosmo.remote.client import RemoteProfile
-    from opencosmo.remote.protocol import Predicate, RemoteOperation
+    from opencosmo.remote.protocol import (
+        Predicate,
+        RemoteOperation,
+        RemoteQueryProduct,
+    )
 
 
 def open(
     remote_dataset: str,
     catalogs: Iterable[str],
-    **open_kwargs: Any,
+    *,
+    product: RemoteQueryProduct,
+    steps: int | Iterable[int],
 ) -> RemoteQuery:
     return RemoteQuery(
         RemoteQuerySource(
             remote_dataset=remote_dataset,
+            product=product,
+            steps=_normalize_steps(steps),
             catalogs=tuple(catalogs),
-            open_kwargs=open_kwargs,
         )
     )
 
@@ -168,6 +175,16 @@ def _validate_take_position(at: str) -> Literal["start", "end", "random"]:
     if at not in ("start", "end", "random"):
         raise ValueError('"at" should be one of ("start", "end", "random")')
     return cast("Literal['start', 'end', 'random']", at)
+
+
+def _normalize_steps(steps: int | Iterable[int]) -> tuple[int, ...]:
+    if isinstance(steps, bool):
+        raise TypeError("steps must be an integer or iterable of integers")
+    if isinstance(steps, int):
+        return (steps,)
+    if isinstance(steps, str):
+        raise TypeError("steps must be an integer or iterable of integers")
+    return tuple(steps)
 
 
 def _predicate_from_mask(mask: ColumnMask | CompoundColumnMask) -> Predicate:
