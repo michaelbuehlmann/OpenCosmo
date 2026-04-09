@@ -16,6 +16,7 @@ dependencies = [
   "h5py>=3.12.1,<4.0.0",
   "astropy>=7.2.0,<8.0.0",
   "pydantic>=2.10.6,<3.0.0",
+  "globus-sdk>=3,<4",
   "hdf5plugin>=5.0.0,!=5.1,<7.0",
   "healpy>=1.19.0,<2.0.0",
   "healsparse>=1.11,<2.0",
@@ -120,4 +121,3 @@ name = "Deprecations and Removals"
 
 [tool.towncrier.fragment.misc]
 name = "Miscellaneous"
-

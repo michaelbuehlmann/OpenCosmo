@@ -141,6 +141,30 @@ for halo in data.halos():
 
 In each iteration, "halo properties" will be a dictionary containing the properties of the halo (such as its total mass), while "dm_particles" and "star_particles" will be OpenCosmo datasets containing the dark matter and stars associated with the halo, respectively. Because these are just like the dataset object we saw eariler, we can further query and transform the particles as needed for our analysis. For more details on how to use the library, check out the [full documentation](https://opencosmo.readthedocs.io/en/latest/).
 
+### Remote Queries
+
+OpenCosmo also includes an experimental remote query client. The default remote
+profile points at the production service, so the normal auth flow is:
+
+```bash
+opencosmo remote login
+opencosmo remote status
+```
+
+If you need a non-default deployment, override the profile in Python:
+
+```python
+import opencosmo as oc
+
+profile = oc.remote.RemoteProfile(base_url="https://remote.example.test")
+oc.remote.configure(profile)
+status = oc.remote.auth.login()
+```
+
+The login flow stores refreshable auth state locally under
+`~/.config/opencosmo/remote-auth.json` and automatically refreshes access tokens
+for future remote API calls.
+
 ### Testing
 
 To run tests, first download the test data [from Google Drive](https://drive.google.com/drive/folders/1CYmZ4sE-RdhRdLhGuYR3rFfgyA3M1mU-?usp=sharing). Set environment variable `OPENCOSMO_DATA_PATH` to the path where the data is stored. Then run the tests with `pytest`:

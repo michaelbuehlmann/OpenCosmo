@@ -1,6 +1,7 @@
 from . import auth
 from .client import (
     RemoteClient,
+    RemoteAuthorizationRequired,
     RemoteError,
     RemoteJobFailed,
     RemoteProfile,
@@ -20,6 +21,7 @@ from .query import RemoteQuery, open
 
 __all__ = [
     "RemoteClient",
+    "RemoteAuthorizationRequired",
     "RemoteError",
     "RemoteJobFailed",
     "RemoteProfile",

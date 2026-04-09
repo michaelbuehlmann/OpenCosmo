@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import json
 import ssl
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 from urllib import request
 from urllib.error import HTTPError, URLError
 
+from opencosmo.remote._auth_store import (
+    DEFAULT_AUTH_CLIENT_ID,
+    DEFAULT_AUTH_STORAGE_PATH,
+    resolve_access_token,
+)
 from opencosmo.remote.protocol import (
     RemoteQueryAccepted,
     RemoteQueryStatus,
@@ -16,9 +22,30 @@ from opencosmo.remote.protocol import (
 if TYPE_CHECKING:
     from opencosmo.remote.protocol import RemoteQueryRequest
 
+DEFAULT_REMOTE_BASE_URL = "https://opencosmoremote-production.up.railway.app"
+
 
 class RemoteError(RuntimeError):
     pass
+
+
+class RemoteAuthorizationRequired(RemoteError):
+    def __init__(
+        self,
+        *,
+        required_scopes: tuple[str, ...],
+        session_required_policies: tuple[str, ...],
+        session_message: str | None,
+        prompt: str | None,
+    ) -> None:
+        super().__init__(
+            "Remote API authorization requires a new login. "
+            "Run `opencosmo remote login`."
+        )
+        self.required_scopes = required_scopes
+        self.session_required_policies = session_required_policies
+        self.session_message = session_message
+        self.prompt = prompt
 
 
 class RemoteJobFailed(RemoteError):
@@ -34,6 +61,8 @@ class RemoteProfile:
     poll_interval_s: float = 2.0
     verify_ssl: bool = True
     result_cache_dir: Path = Path.home() / ".cache" / "opencosmo" / "remote"
+    auth_client_id: str = DEFAULT_AUTH_CLIENT_ID
+    auth_storage_path: Path = DEFAULT_AUTH_STORAGE_PATH
 
     @property
     def request_headers(self) -> dict[str, str]:
@@ -55,8 +84,9 @@ def get_profile(profile: RemoteProfile | None = None) -> RemoteProfile:
     if profile is not None:
         return profile
     if _default_profile is None:
-        raise RemoteError(
-            "No remote profile configured. Call oc.remote.configure(...)."
+        return RemoteProfile(
+            base_url=DEFAULT_REMOTE_BASE_URL,
+            auth_storage_path=DEFAULT_AUTH_STORAGE_PATH,
         )
     return _default_profile
 
@@ -84,7 +114,7 @@ class RemoteClient:
         if output_path.exists():
             return output_path
 
-        req = request.Request(status.result_url, headers=self.__profile.request_headers)
+        req = request.Request(status.result_url, headers=self.__download_headers())
         try:
             context = self.__ssl_context()
             with request.urlopen(
@@ -110,7 +140,7 @@ class RemoteClient:
         req = request.Request(
             url,
             data=data,
-            headers=self.__profile.request_headers,
+            headers=self.__api_request_headers(),
             method=method,
         )
         try:
@@ -121,6 +151,9 @@ class RemoteClient:
                 return response.read().decode("utf-8")
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
+            auth_error = _authorization_required_error(exc.code, detail)
+            if auth_error is not None:
+                raise auth_error from exc
             raise RemoteError(
                 f"Remote API request failed: {exc.code} {detail}"
             ) from exc
@@ -131,6 +164,78 @@ class RemoteClient:
         if self.__profile.verify_ssl:
             return None
         return ssl._create_unverified_context()
+
+    def __api_request_headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"} | dict(self.__profile.headers)
+
+        if self.__profile.token is not None:
+            _strip_authorization_headers(headers)
+            headers["Authorization"] = f"Bearer {self.__profile.token}"
+            return headers
+
+        if _has_authorization_header(headers):
+            return headers
+
+        stored_token = resolve_access_token(self.__profile)
+        if stored_token is not None:
+            headers["Authorization"] = f"Bearer {stored_token}"
+        return headers
+
+    def __download_headers(self) -> dict[str, str]:
+        headers = dict(self.__profile.headers)
+        _strip_authorization_headers(headers)
+        return headers
+
+
+def _has_authorization_header(headers: Mapping[str, str]) -> bool:
+    return any(key.lower() == "authorization" for key in headers)
+
+
+def _strip_authorization_headers(headers: dict[str, str]) -> None:
+    for key in list(headers):
+        if key.lower() == "authorization":
+            headers.pop(key)
+
+
+def _authorization_required_error(
+    status_code: int, response_body: str
+) -> RemoteAuthorizationRequired | None:
+    if status_code != 403:
+        return None
+
+    try:
+        payload = json.loads(response_body)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    detail = payload.get("detail")
+    if not isinstance(detail, dict) or detail.get("error") != "authorization_required":
+        return None
+
+    params = detail.get("authorization_parameters")
+    if not isinstance(params, dict):
+        return None
+
+    return RemoteAuthorizationRequired(
+        required_scopes=_string_tuple(params.get("required_scopes")),
+        session_required_policies=_string_tuple(
+            params.get("session_required_policies")
+        ),
+        session_message=_optional_string(params.get("session_message")),
+        prompt=_optional_string(params.get("prompt")),
+    )
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for item in value if isinstance(item, str) and item)
+
+
+def _optional_string(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
 
 
 class RemoteQueryResponse:

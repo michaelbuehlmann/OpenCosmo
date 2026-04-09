@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Optional
 import click
 
 from opencosmo.analysis.install import get_file_versions, install_spec
+from opencosmo.remote.cli import remote
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -26,6 +27,8 @@ def install(spec_name: str, file: Optional[Path] = None, dev: bool = False):
         versions = {}
 
     install_spec(spec_name, versions, dev=dev)
+
+cli.add_command(remote)
 
 
 if __name__ == "__main__":
