@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import time
+from datetime import datetime
 from pathlib import Path
 from urllib.error import HTTPError
 
@@ -12,6 +13,7 @@ from click.testing import CliRunner
 from pydantic import ValidationError
 
 import opencosmo as oc
+from opencosmo.remote import _status_display as remote_status_display
 from opencosmo.analysis.cli import cli
 from opencosmo.remote._auth_store import (
     DEFAULT_AUTH_CLIENT_ID,
@@ -694,6 +696,244 @@ def test_remote_query_fetch_submits_waits_downloads_and_opens(monkeypatch, tmp_p
         "https://example.test/queries/job-1",
         "https://example.test/results/job-1.hdf5",
     ]
+
+
+def test_remote_query_fetch_reports_timestamped_status_transitions(
+    monkeypatch, tmp_path, capsys
+):
+    calls = []
+    statuses = iter(
+        [
+            RemoteQueryStatus(job_id="job-1", status="queued"),
+            RemoteQueryStatus(job_id="job-1", status="queued"),
+            RemoteQueryStatus(job_id="job-1", status="running"),
+            RemoteQueryStatus(
+                job_id="job-1",
+                status="succeeded",
+                result_url="https://example.test/results/job-1.hdf5",
+            ),
+        ]
+    )
+    timestamps = iter(
+        [
+            datetime(2026, 4, 10, 12, 0, 0),
+            datetime(2026, 4, 10, 12, 0, 1),
+            datetime(2026, 4, 10, 12, 0, 2),
+            datetime(2026, 4, 10, 12, 0, 3),
+        ]
+    )
+
+    def urlopen(req, timeout=None, context=None):
+        calls.append(req.full_url)
+        if req.full_url.endswith("/queries") and req.get_method() == "POST":
+            return _Response(json.dumps({"job_id": "job-1", "status": "queued"}).encode())
+        if req.full_url.endswith("/queries/job-1"):
+            return _Response(next(statuses).model_dump_json().encode())
+        return _Response(b"fake-hdf5")
+
+    def fake_open(path):
+        return Path(path).read_bytes()
+
+    monkeypatch.setattr("opencosmo.remote.client.request.urlopen", urlopen)
+    monkeypatch.setattr("opencosmo.remote.client.time.sleep", lambda *_: None)
+    monkeypatch.setattr("opencosmo.remote._status_display._now", lambda: next(timestamps))
+    monkeypatch.setattr(oc, "open", fake_open)
+
+    profile = oc.remote.RemoteProfile(
+        base_url="https://example.test",
+        poll_interval_s=0,
+        result_cache_dir=tmp_path,
+    )
+    result = oc.remote.open(
+        "Frontier-E",
+        ["halo_properties"],
+        product="snapshot",
+        steps=205,
+    ).fetch(profile=profile)
+
+    assert result == b"fake-hdf5"
+    assert capsys.readouterr().err.splitlines() == [
+        "[12:00:00] Remote query job-1 submitted",
+        "[12:00:01] Remote query job-1 queued",
+        "[12:00:02] Remote query job-1 running",
+        "[12:00:03] Remote query job-1 succeeded",
+    ]
+    assert calls == [
+        "https://example.test/queries",
+        "https://example.test/queries/job-1",
+        "https://example.test/queries/job-1",
+        "https://example.test/queries/job-1",
+        "https://example.test/queries/job-1",
+        "https://example.test/results/job-1.hdf5",
+    ]
+
+
+def test_remote_query_wait_uses_initial_accepted_status_once(
+    monkeypatch, capsys
+):
+    statuses = iter(
+        [
+            RemoteQueryStatus(job_id="job-1", status="running"),
+            RemoteQueryStatus(job_id="job-1", status="succeeded"),
+        ]
+    )
+    timestamps = iter(
+        [
+            datetime(2026, 4, 10, 12, 1, 0),
+            datetime(2026, 4, 10, 12, 1, 1),
+            datetime(2026, 4, 10, 12, 1, 2),
+        ]
+    )
+
+    def urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/queries") and req.get_method() == "POST":
+            return _Response(json.dumps({"job_id": "job-1", "status": "running"}).encode())
+        return _Response(next(statuses).model_dump_json().encode())
+
+    monkeypatch.setattr("opencosmo.remote.client.request.urlopen", urlopen)
+    monkeypatch.setattr("opencosmo.remote.client.time.sleep", lambda *_: None)
+    monkeypatch.setattr("opencosmo.remote._status_display._now", lambda: next(timestamps))
+
+    response = oc.remote.open(
+        "Frontier-E",
+        ["halo_properties"],
+        product="snapshot",
+        steps=205,
+    ).submit(profile=oc.remote.RemoteProfile(base_url="https://example.test", poll_interval_s=0))
+
+    status = response.wait()
+
+    assert status.status == "succeeded"
+    assert capsys.readouterr().err.splitlines() == [
+        "[12:01:00] Remote query job-1 submitted",
+        "[12:01:01] Remote query job-1 running",
+        "[12:01:02] Remote query job-1 succeeded",
+    ]
+
+
+def test_remote_query_get_results_can_disable_status_output(
+    monkeypatch, tmp_path, capsys
+):
+    def urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/queries") and req.get_method() == "POST":
+            return _Response(json.dumps({"job_id": "job-1", "status": "queued"}).encode())
+        if req.full_url.endswith("/queries/job-1"):
+            return _Response(
+                RemoteQueryStatus(
+                    job_id="job-1",
+                    status="succeeded",
+                    result_url="https://example.test/results/job-1.hdf5",
+                )
+                .model_dump_json()
+                .encode()
+            )
+        return _Response(b"fake-hdf5")
+
+    def fake_open(path):
+        return Path(path).read_bytes()
+
+    monkeypatch.setattr("opencosmo.remote.client.request.urlopen", urlopen)
+    monkeypatch.setattr(oc, "open", fake_open)
+
+    response = oc.remote.open(
+        "Frontier-E",
+        ["halo_properties"],
+        product="snapshot",
+        steps=205,
+    ).submit(
+        profile=oc.remote.RemoteProfile(
+            base_url="https://example.test",
+            result_cache_dir=tmp_path,
+        )
+    )
+
+    result = response.get_results(show_status=False)
+
+    assert result == b"fake-hdf5"
+    assert capsys.readouterr().err == ""
+
+
+def test_remote_query_fetch_reports_failed_status_before_raising(
+    monkeypatch, capsys
+):
+    timestamps = iter(
+        [
+            datetime(2026, 4, 10, 12, 2, 0),
+            datetime(2026, 4, 10, 12, 2, 1),
+            datetime(2026, 4, 10, 12, 2, 2),
+        ]
+    )
+
+    def urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/queries") and req.get_method() == "POST":
+            return _Response(json.dumps({"job_id": "job-1", "status": "queued"}).encode())
+        return _Response(
+            RemoteQueryStatus(
+                job_id="job-1",
+                status="failed",
+                message="out of memory",
+            )
+            .model_dump_json()
+            .encode()
+        )
+
+    monkeypatch.setattr("opencosmo.remote.client.request.urlopen", urlopen)
+    monkeypatch.setattr("opencosmo.remote._status_display._now", lambda: next(timestamps))
+
+    with pytest.raises(RemoteError, match="out of memory"):
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties"],
+            product="snapshot",
+            steps=205,
+        ).fetch(profile=oc.remote.RemoteProfile(base_url="https://example.test"))
+
+    assert capsys.readouterr().err.splitlines() == [
+        "[12:02:00] Remote query job-1 submitted",
+        "[12:02:01] Remote query job-1 queued",
+        "[12:02:02] Remote query job-1 failed: out of memory",
+    ]
+
+
+def test_status_display_uses_single_notebook_handle(monkeypatch):
+    events = []
+
+    class FakeHandle:
+        def display(self, text):
+            events.append(("display", text))
+
+        def update(self, text):
+            events.append(("update", text))
+
+    class FakeShell:
+        pass
+
+    FakeShell.__module__ = "ipykernel.zmqshell"
+
+    monkeypatch.setattr(remote_status_display, "_get_ipython_shell", lambda: FakeShell())
+    monkeypatch.setattr(
+        remote_status_display,
+        "_get_notebook_handle_class",
+        lambda: FakeHandle,
+    )
+
+    sink = remote_status_display.create_status_sink()
+    sink.emit("first")
+    sink.emit("second")
+    sink.close()
+
+    assert events == [("display", "first"), ("update", "second")]
+
+
+def test_status_display_falls_back_to_stderr_when_not_in_notebook():
+    stream = io.StringIO()
+
+    sink = remote_status_display.create_status_sink(stream=stream)
+    sink.emit("fallback")
+    sink.close()
+
+    assert isinstance(sink, remote_status_display.StderrStatusSink)
+    assert stream.getvalue() == "fallback\n"
 
 
 def test_remote_client_submit_serializes_structured_and_file_collection_sources(

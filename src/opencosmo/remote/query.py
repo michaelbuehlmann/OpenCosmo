@@ -13,6 +13,7 @@ from opencosmo.column.column import ColumnMask, CompoundColumnMask
 from opencosmo.remote.client import (
     RemoteClient,
     RemoteQueryResponse,
+    RemoteQueryStatus,
     get_profile,
 )
 from opencosmo.remote.protocol import (
@@ -23,7 +24,6 @@ from opencosmo.remote.protocol import (
     FilterOperation,
     QueryValue,
     RemoteQueryRequest,
-    RemoteQuerySource,
     SelectOperation,
     StructuredCatalogSource,
     SortByOperation,
@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         Predicate,
         RemoteOperation,
         RemoteQueryProduct,
+        RemoteQuerySource,
     )
 
 
@@ -174,10 +175,22 @@ class RemoteQuery:
     def submit(self, profile: RemoteProfile | None = None) -> RemoteQueryResponse:
         client = RemoteClient(get_profile(profile))
         accepted = client.submit(self.into_request())
-        return RemoteQueryResponse(accepted.job_id, client)
+        return RemoteQueryResponse(
+            accepted.job_id,
+            client,
+            initial_status=RemoteQueryStatus(
+                job_id=accepted.job_id,
+                status=accepted.status,
+            ),
+        )
 
-    def fetch(self, profile: RemoteProfile | None = None):
-        return self.submit(profile=profile).get_results()
+    def fetch(
+        self,
+        profile: RemoteProfile | None = None,
+        *,
+        show_status: bool = True,
+    ):
+        return self.submit(profile=profile).get_results(show_status=show_status)
 
 
 def _client_version():

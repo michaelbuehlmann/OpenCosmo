@@ -5,7 +5,7 @@ import ssl
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 from urllib import request
 from urllib.error import HTTPError, URLError
 
@@ -14,6 +14,7 @@ from opencosmo.remote._auth_store import (
     DEFAULT_AUTH_STORAGE_PATH,
     resolve_access_token,
 )
+from opencosmo.remote._status_display import RemoteStatusReporter
 from opencosmo.remote.protocol import (
     RemoteQueryAccepted,
     RemoteQueryStatus,
@@ -125,10 +126,21 @@ class RemoteClient:
             raise RemoteError(f"Failed to download remote query result: {exc}") from exc
         return output_path
 
-    def wait(self, job_id: str, timeout_s: float | None = None) -> RemoteQueryStatus:
+    def wait(
+        self,
+        job_id: str,
+        timeout_s: float | None = None,
+        *,
+        initial_status: RemoteQueryStatus | None = None,
+        on_status: Callable[[RemoteQueryStatus], None] | None = None,
+    ) -> RemoteQueryStatus:
         start = time.monotonic()
+        last_status = _status_key(initial_status)
         while True:
             status = self.get_status(job_id)
+            if on_status is not None and _status_key(status) != last_status:
+                on_status(status)
+                last_status = _status_key(status)
             if status.status in ("succeeded", "failed"):
                 return status
             if timeout_s is not None and time.monotonic() - start >= timeout_s:
@@ -238,6 +250,12 @@ def _optional_string(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _status_key(status: RemoteQueryStatus | None) -> tuple[str, str | None] | None:
+    if status is None:
+        return None
+    return (status.status, status.message)
+
+
 class RemoteQueryResponse:
     def __init__(
         self,
@@ -253,16 +271,41 @@ class RemoteQueryResponse:
         self.__status = self.__client.get_status(self.job_id)
         return self.__status
 
-    def wait(self, timeout_s: float | None = None) -> RemoteQueryStatus:
-        self.__status = self.__client.wait(self.job_id, timeout_s)
-        return self.__status
+    def wait(
+        self, timeout_s: float | None = None, *, show_status: bool = True
+    ) -> RemoteQueryStatus:
+        if self.__status is not None and self.__status.status in ("succeeded", "failed"):
+            return self.__status
 
-    def get_results(self):
+        if not show_status:
+            self.__status = self.__client.wait(
+                self.job_id,
+                timeout_s,
+                initial_status=self.__status,
+            )
+            return self.__status
+
+        reporter = RemoteStatusReporter(self.job_id)
+        try:
+            reporter.emit_submitted()
+            if self.__status is not None:
+                reporter.emit_status(self.__status)
+            self.__status = self.__client.wait(
+                self.job_id,
+                timeout_s,
+                initial_status=self.__status,
+                on_status=reporter.emit_status,
+            )
+            return self.__status
+        finally:
+            reporter.close()
+
+    def get_results(self, *, show_status: bool = True):
         import opencosmo as oc
 
         status = self.__status
         if status is None or status.status != "succeeded":
-            status = self.wait()
+            status = self.wait(show_status=show_status)
         if status.status == "failed":
             raise RemoteJobFailed(status.message or "Remote query failed.")
         result_path = self.__client.download_result(status)

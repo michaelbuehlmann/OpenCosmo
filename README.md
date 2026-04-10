@@ -195,6 +195,15 @@ status = resp.wait()
 ds = resp.get_results()
 ```
 
+Blocking calls such as `fetch()`, `wait()`, and `get_results()` now print
+timestamped state transitions while the remote job is pending. In notebooks the
+status output updates in place.
+
+```python
+status = resp.wait(show_status=False)
+ds = resp.get_results(show_status=False)
+```
+
 Use `fetch()` for the common one-shot flow, and `submit()` when you want the
 explicit asynchronous response object.
 
