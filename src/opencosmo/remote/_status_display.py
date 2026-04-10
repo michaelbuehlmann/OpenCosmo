@@ -55,7 +55,7 @@ class RemoteStatusReporter:
             format_status_event(
                 status.job_id,
                 status.status,
-                message=status.message,
+                message=_status_summary(status),
             )
         )
 
@@ -82,6 +82,16 @@ def format_status_event(
     timestamp = (observed_at or _now()).strftime("%H:%M:%S")
     suffix = f": {message}" if message else ""
     return f"[{timestamp}] Remote query {job_id} {status}{suffix}"
+
+
+def _status_summary(status: RemoteQueryStatus) -> str | None:
+    if status.message:
+        return status.message
+    if status.error_type and status.error_detail:
+        return f"{status.error_type}: {status.error_detail}"
+    if status.status == "failed":
+        return "Remote query failed."
+    return None
 
 
 def _now() -> datetime:

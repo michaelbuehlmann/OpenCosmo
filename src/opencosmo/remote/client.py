@@ -50,7 +50,53 @@ class RemoteAuthorizationRequired(RemoteError):
 
 
 class RemoteJobFailed(RemoteError):
-    pass
+    def __init__(
+        self,
+        *,
+        job_id: str,
+        message: str | None,
+        failure_stage: str | None,
+        error_type: str | None,
+        error_detail: str | None,
+        stderr_excerpt: str | None,
+        stdout_excerpt: str | None,
+    ) -> None:
+        self.job_id = job_id
+        self.message = message
+        self.failure_stage = failure_stage
+        self.error_type = error_type
+        self.error_detail = error_detail
+        self.stderr_excerpt = stderr_excerpt
+        self.stdout_excerpt = stdout_excerpt
+        super().__init__(self.__format_message())
+
+    @classmethod
+    def from_status(cls, status: RemoteQueryStatus) -> RemoteJobFailed:
+        return cls(
+            job_id=status.job_id,
+            message=status.message,
+            failure_stage=status.failure_stage,
+            error_type=status.error_type,
+            error_detail=status.error_detail,
+            stderr_excerpt=status.stderr_excerpt,
+            stdout_excerpt=status.stdout_excerpt,
+        )
+
+    def __format_message(self) -> str:
+        lines = [f"Remote query {self.job_id} failed."]
+        if self.message is not None:
+            lines.append(f"Summary: {self.message}")
+        if self.failure_stage is not None:
+            lines.append(f"Stage: {self.failure_stage}")
+        if self.error_type is not None:
+            lines.append(f"Error type: {self.error_type}")
+        if self.error_detail is not None:
+            lines.append(_format_exception_block("Detail:", self.error_detail))
+        if self.stderr_excerpt is not None:
+            lines.append(_format_exception_block("Stderr tail:", self.stderr_excerpt))
+        if self.stdout_excerpt is not None:
+            lines.append(_format_exception_block("Stdout tail:", self.stdout_excerpt))
+        return "\n".join(lines)
 
 
 @dataclass(frozen=True)
@@ -250,10 +296,33 @@ def _optional_string(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _status_key(status: RemoteQueryStatus | None) -> tuple[str, str | None] | None:
+def _format_exception_block(title: str, text: str) -> str:
+    indented = "\n".join(f"  {line}" for line in text.splitlines() or [""])
+    return f"{title}\n{indented}"
+
+
+def _status_key(
+    status: RemoteQueryStatus | None,
+) -> tuple[
+    str,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+] | None:
     if status is None:
         return None
-    return (status.status, status.message)
+    return (
+        status.status,
+        status.message,
+        status.failure_stage,
+        status.error_type,
+        status.error_detail,
+        status.stderr_excerpt,
+        status.stdout_excerpt,
+    )
 
 
 class RemoteQueryResponse:
@@ -307,6 +376,6 @@ class RemoteQueryResponse:
         if status is None or status.status != "succeeded":
             status = self.wait(show_status=show_status)
         if status.status == "failed":
-            raise RemoteJobFailed(status.message or "Remote query failed.")
+            raise RemoteJobFailed.from_status(status)
         result_path = self.__client.download_result(status)
         return oc.open(result_path)

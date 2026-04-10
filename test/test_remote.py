@@ -27,6 +27,7 @@ from opencosmo.remote.client import (
     RemoteAuthorizationRequired,
     RemoteClient,
     RemoteError,
+    RemoteJobFailed,
     RemoteQueryResponse,
 )
 from opencosmo.remote.execution import execute_remote_query, replay_operation
@@ -1617,7 +1618,12 @@ def test_remote_query_fetch_reports_failed_status_before_raising(
             RemoteQueryStatus(
                 job_id="job-1",
                 status="failed",
-                message="out of memory",
+                message="Remote query failed.",
+                failure_stage="execution",
+                error_type="RuntimeError",
+                error_detail="out of memory",
+                stderr_excerpt="stderr line 1\nstderr line 2",
+                stdout_excerpt="stdout line 1",
             )
             .model_dump_json()
             .encode()
@@ -1626,7 +1632,65 @@ def test_remote_query_fetch_reports_failed_status_before_raising(
     monkeypatch.setattr("opencosmo.remote.client.request.urlopen", urlopen)
     monkeypatch.setattr("opencosmo.remote._status_display._now", lambda: next(timestamps))
 
-    with pytest.raises(RemoteError, match="out of memory"):
+    with pytest.raises(RemoteJobFailed) as exc_info:
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties"],
+            product="snapshot",
+            steps=205,
+        ).fetch(profile=oc.remote.RemoteProfile(base_url="https://example.test"))
+
+    assert str(exc_info.value) == "\n".join(
+        [
+            "Remote query job-1 failed.",
+            "Summary: Remote query failed.",
+            "Stage: execution",
+            "Error type: RuntimeError",
+            "Detail:",
+            "  out of memory",
+            "Stderr tail:",
+            "  stderr line 1",
+            "  stderr line 2",
+            "Stdout tail:",
+            "  stdout line 1",
+        ]
+    )
+    assert capsys.readouterr().err.splitlines() == [
+        "[12:02:00] Remote query job-1 submitted",
+        "[12:02:01] Remote query job-1 queued",
+        "[12:02:02] Remote query job-1 failed: Remote query failed.",
+    ]
+
+
+def test_remote_query_failed_status_line_uses_error_detail_when_message_missing(
+    monkeypatch, capsys
+):
+    timestamps = iter(
+        [
+            datetime(2026, 4, 10, 12, 3, 0),
+            datetime(2026, 4, 10, 12, 3, 1),
+            datetime(2026, 4, 10, 12, 3, 2),
+        ]
+    )
+
+    def urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/queries") and req.get_method() == "POST":
+            return _Response(json.dumps({"job_id": "job-1", "status": "queued"}).encode())
+        return _Response(
+            RemoteQueryStatus(
+                job_id="job-1",
+                status="failed",
+                error_type="RuntimeError",
+                error_detail="worker exploded",
+            )
+            .model_dump_json()
+            .encode()
+        )
+
+    monkeypatch.setattr("opencosmo.remote.client.request.urlopen", urlopen)
+    monkeypatch.setattr("opencosmo.remote._status_display._now", lambda: next(timestamps))
+
+    with pytest.raises(RemoteJobFailed, match="worker exploded"):
         oc.remote.open(
             "Frontier-E",
             ["halo_properties"],
@@ -1635,10 +1699,30 @@ def test_remote_query_fetch_reports_failed_status_before_raising(
         ).fetch(profile=oc.remote.RemoteProfile(base_url="https://example.test"))
 
     assert capsys.readouterr().err.splitlines() == [
-        "[12:02:00] Remote query job-1 submitted",
-        "[12:02:01] Remote query job-1 queued",
-        "[12:02:02] Remote query job-1 failed: out of memory",
+        "[12:03:00] Remote query job-1 submitted",
+        "[12:03:01] Remote query job-1 queued",
+        "[12:03:02] Remote query job-1 failed: RuntimeError: worker exploded",
     ]
+
+
+def test_remote_query_status_accepts_optional_failure_metadata():
+    status = RemoteQueryStatus.model_validate(
+        {
+            "job_id": "job-1",
+            "status": "failed",
+            "failure_stage": "execution",
+            "error_type": "RuntimeError",
+            "error_detail": "boom",
+            "stderr_excerpt": "stderr",
+            "stdout_excerpt": "stdout",
+        }
+    )
+
+    assert status.failure_stage == "execution"
+    assert status.error_type == "RuntimeError"
+    assert status.error_detail == "boom"
+    assert status.stderr_excerpt == "stderr"
+    assert status.stdout_excerpt == "stdout"
 
 
 def test_status_display_uses_single_notebook_handle(monkeypatch):

@@ -371,6 +371,14 @@ class RemoteQueryStatus(BaseModel):
     updated_at: str | None = None
     message: str | None = None
     result_url: str | None = None
+    failure_stage: (
+        Literal["submission", "staging", "execution", "status_refresh", "manifest"]
+        | None
+    ) = None
+    error_type: str | None = None
+    error_detail: str | None = None
+    stderr_excerpt: str | None = None
+    stdout_excerpt: str | None = None
 
 
 SelectionTree.model_rebuild()
