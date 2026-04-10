@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import re
 from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-PROTOCOL_VERSION: Literal["1.0"] = "1.0"
+PROTOCOL_VERSION: Literal["2.0"] = "2.0"
 ComparisonOperator: TypeAlias = Literal["eq", "ne", "gt", "ge", "lt", "le", "isin"]
 CompoundOperator: TypeAlias = Literal["and", "or"]
 TakePosition: TypeAlias = Literal["start", "end", "random"]
@@ -292,13 +293,56 @@ RemoteOperation: TypeAlias = Annotated[
 ]
 
 
+_WALLTIME_PATTERN = re.compile(r"^\d{2}:\d{2}:\d{2}$")
+
+
+class RemoteExecutionOptions(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    allocation: str | None = None
+    priority: Literal["normal", "debug"] | None = None
+    walltime: str | None = None
+    reservation: str | None = None
+
+    @field_validator("allocation", "reservation")
+    @classmethod
+    def validate_optional_non_empty_string(cls, value: str | None):
+        if value is None:
+            return value
+        value = value.strip()
+        if not value:
+            raise ValueError("value must not be blank")
+        return value
+
+    @field_validator("walltime")
+    @classmethod
+    def validate_walltime(cls, value: str | None):
+        if value is None:
+            return value
+        if not _WALLTIME_PATTERN.fullmatch(value):
+            raise ValueError("walltime must match HH:MM:SS")
+        return value
+
+    @model_validator(mode="after")
+    def validate_has_override(self):
+        if (
+            self.allocation is None
+            and self.priority is None
+            and self.walltime is None
+            and self.reservation is None
+        ):
+            raise ValueError("RemoteExecutionOptions must include at least one override")
+        return self
+
+
 class RemoteQueryRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    protocol_version: Literal["1.0"] = PROTOCOL_VERSION
+    protocol_version: Literal["2.0"] = PROTOCOL_VERSION
     client_version: str
     source: RemoteQuerySource
     operations: tuple[RemoteOperation, ...] = ()
+    execution: RemoteExecutionOptions | None = None
 
     @model_validator(mode="before")
     @classmethod

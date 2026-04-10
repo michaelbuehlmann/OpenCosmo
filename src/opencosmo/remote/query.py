@@ -36,6 +36,7 @@ from opencosmo.remote.protocol import (
     FileCollectionSource,
     FilterOperation,
     QueryValue,
+    RemoteExecutionOptions,
     RemoteQueryRequest,
     ScalarExpr,
     SelectionLeaf,
@@ -56,6 +57,7 @@ if TYPE_CHECKING:
     from opencosmo.remote.protocol import (
         DerivedExpr,
         Predicate,
+        RemoteExecutionOptions,
         RemoteOperation,
         RemoteQueryProduct,
         RemoteQuerySource,
@@ -96,9 +98,11 @@ class RemoteQuery:
         self,
         source: RemoteQuerySource,
         operations: tuple[RemoteOperation, ...] = (),
+        execution: RemoteExecutionOptions | None = None,
     ):
         self.__source = source
         self.__operations = operations
+        self.__execution = execution
 
     @property
     def source(self) -> RemoteQuerySource:
@@ -108,8 +112,32 @@ class RemoteQuery:
     def operations(self) -> tuple[RemoteOperation, ...]:
         return self.__operations
 
+    @property
+    def execution(self) -> RemoteExecutionOptions | None:
+        return self.__execution
+
     def __with_operation(self, operation: RemoteOperation):
-        return RemoteQuery(self.__source, self.__operations + (operation,))
+        return RemoteQuery(
+            self.__source,
+            self.__operations + (operation,),
+            execution=self.__execution,
+        )
+
+    def with_execution(
+        self,
+        *,
+        allocation: str | None = None,
+        priority: Literal["normal", "debug"] | None = None,
+        walltime: str | None = None,
+        reservation: str | None = None,
+    ) -> RemoteQuery:
+        execution = RemoteExecutionOptions(
+            allocation=allocation,
+            priority=priority,
+            walltime=walltime,
+            reservation=reservation,
+        )
+        return RemoteQuery(self.__source, self.__operations, execution=execution)
 
     def filter(self, *masks: ColumnMask | CompoundColumnMask) -> RemoteQuery:
         if not masks:
@@ -199,10 +227,11 @@ class RemoteQuery:
             client_version=_client_version(),
             source=self.__source,
             operations=self.__operations,
+            execution=self.__execution,
         )
 
     def serialize(self) -> dict:
-        return self.into_request().model_dump(mode="json")
+        return self.into_request().model_dump(mode="json", exclude_none=True)
 
     def submit(self, profile: RemoteProfile | None = None) -> RemoteQueryResponse:
         client = RemoteClient(get_profile(profile))

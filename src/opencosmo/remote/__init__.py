@@ -12,6 +12,7 @@ from .client import (
 from .execution import execute_remote_query, replay_operation
 from .protocol import (
     FileCollectionSource,
+    RemoteExecutionOptions,
     RemoteQueryAccepted,
     RemoteQueryProduct,
     RemoteQueryRequest,
@@ -23,6 +24,7 @@ from .query import RemoteQuery, open, open_collection
 
 __all__ = [
     "FileCollectionSource",
+    "RemoteExecutionOptions",
     "RemoteClient",
     "RemoteAuthorizationRequired",
     "RemoteError",

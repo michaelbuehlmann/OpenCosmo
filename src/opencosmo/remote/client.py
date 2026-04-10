@@ -97,7 +97,7 @@ class RemoteClient:
         self.__profile = profile
 
     def submit(self, query: RemoteQueryRequest) -> RemoteQueryAccepted:
-        data = query.model_dump_json().encode("utf-8")
+        data = query.model_dump_json(exclude_none=True).encode("utf-8")
         response = self.__request("POST", "/queries", data=data)
         return RemoteQueryAccepted.model_validate_json(response)
 

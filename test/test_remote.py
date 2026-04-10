@@ -96,6 +96,51 @@ def test_remote_query_serializes_dataset_operations():
             "derived_columns": {},
         },
     }
+    assert "execution" not in payload
+
+
+def test_remote_query_serializes_execution_overrides():
+    query = oc.remote.open(
+        "Frontier-E",
+        ["halo_properties"],
+        product="snapshot",
+        steps=205,
+    ).with_execution(
+        allocation="my-project",
+        priority="debug",
+        walltime="00:15:00",
+        reservation="nightly-window",
+    )
+
+    request = RemoteQueryRequest.model_validate(query.serialize())
+    payload = query.serialize()
+
+    assert request.execution is not None
+    assert request.execution.allocation == "my-project"
+    assert request.execution.priority == "debug"
+    assert request.execution.walltime == "00:15:00"
+    assert request.execution.reservation == "nightly-window"
+    assert payload["execution"] == {
+        "allocation": "my-project",
+        "priority": "debug",
+        "walltime": "00:15:00",
+        "reservation": "nightly-window",
+    }
+
+
+def test_remote_query_with_execution_returns_new_query():
+    query = oc.remote.open(
+        "Frontier-E",
+        ["halo_properties"],
+        product="snapshot",
+        steps=205,
+    )
+
+    updated = query.with_execution(priority="debug")
+
+    assert query.execution is None
+    assert updated.execution is not None
+    assert updated.execution.priority == "debug"
 
 
 def test_remote_query_serializes_dataset_select_with_derived_columns():
@@ -158,7 +203,7 @@ def test_remote_query_get_method_was_removed():
 def test_remote_query_request_accepts_legacy_structured_source_without_kind():
     request = RemoteQueryRequest.model_validate(
         {
-            "protocol_version": "1.0",
+            "protocol_version": "2.0",
             "client_version": "test-client",
             "source": {
                 "remote_dataset": "Frontier-E",
@@ -182,7 +227,7 @@ def test_remote_query_request_accepts_legacy_structured_source_without_kind():
 def test_remote_query_request_accepts_explicit_structured_source_kind():
     request = RemoteQueryRequest.model_validate(
         {
-            "protocol_version": "1.0",
+            "protocol_version": "2.0",
             "client_version": "test-client",
             "source": {
                 "kind": "structured_catalog",
@@ -204,7 +249,7 @@ def test_remote_query_request_accepts_explicit_structured_source_kind():
 def test_remote_query_request_accepts_file_collection_source_kind():
     request = RemoteQueryRequest.model_validate(
         {
-            "protocol_version": "1.0",
+            "protocol_version": "2.0",
             "client_version": "test-client",
             "source": {
                 "kind": "file_collection",
@@ -219,6 +264,67 @@ def test_remote_query_request_accepts_file_collection_source_kind():
     assert request.source.kind == "file_collection"
     assert request.source.remote_dataset == "LastJourney-Diffsky-COSMOS-2026-02-17"
     assert request.source.open_kwargs == {"synth_cores": True}
+
+
+def test_remote_query_request_accepts_execution_block():
+    request = RemoteQueryRequest.model_validate(
+        {
+            "protocol_version": "2.0",
+            "client_version": "test-client",
+            "source": {
+                "kind": "structured_catalog",
+                "remote_dataset": "Frontier-E",
+                "product": "snapshot",
+                "steps": [205],
+                "catalogs": ["halo_properties"],
+            },
+            "operations": [],
+            "execution": {
+                "allocation": "my-project",
+                "priority": "normal",
+                "walltime": "01:30:00",
+                "reservation": "window-7",
+            },
+        }
+    )
+
+    assert request.execution is not None
+    assert request.execution.allocation == "my-project"
+    assert request.execution.priority == "normal"
+    assert request.execution.walltime == "01:30:00"
+    assert request.execution.reservation == "window-7"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"allocation": "   "}, "value must not be blank"),
+        ({"reservation": "   "}, "value must not be blank"),
+        ({"walltime": "15:00"}, "walltime must match HH:MM:SS"),
+        (
+            {"priority": "urgent"},
+            "Input should be 'normal' or 'debug'",
+        ),
+    ],
+)
+def test_remote_query_with_execution_rejects_invalid_values(kwargs, message):
+    with pytest.raises(ValidationError, match=message):
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties"],
+            product="snapshot",
+            steps=205,
+        ).with_execution(**kwargs)
+
+
+def test_remote_query_with_execution_requires_at_least_one_override():
+    with pytest.raises(ValidationError, match="include at least one override"):
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties"],
+            product="snapshot",
+            steps=205,
+        ).with_execution()
 
 
 def test_remote_query_serializes_structure_collection_select_and_units():
@@ -1614,6 +1720,16 @@ def test_remote_client_submit_serializes_structured_and_file_collection_sources(
         .take(10, at="start")
         .into_request()
     )
+    client.submit(
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties"],
+            product="snapshot",
+            steps=205,
+        )
+        .with_execution(priority="debug", walltime="00:15:00")
+        .into_request()
+    )
 
     assert payloads[0]["source"]["kind"] == "structured_catalog"
     assert payloads[0]["source"]["product"] == "snapshot"
@@ -1627,6 +1743,11 @@ def test_remote_client_submit_serializes_structured_and_file_collection_sources(
     assert payloads[1]["source"]["open_kwargs"] == {"synth_cores": True}
     assert "steps" not in payloads[1]["source"]
     assert "catalogs" not in payloads[1]["source"]
+
+    assert payloads[2]["execution"] == {
+        "priority": "debug",
+        "walltime": "00:15:00",
+    }
 
 
 def test_remote_query_submit_uses_default_profile_when_unconfigured(
