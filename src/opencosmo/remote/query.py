@@ -171,10 +171,13 @@ class RemoteQuery:
     def serialize(self) -> dict:
         return self.into_request().model_dump(mode="json")
 
-    def get(self, profile: RemoteProfile | None = None) -> RemoteQueryResponse:
+    def submit(self, profile: RemoteProfile | None = None) -> RemoteQueryResponse:
         client = RemoteClient(get_profile(profile))
         accepted = client.submit(self.into_request())
         return RemoteQueryResponse(accepted.job_id, client)
+
+    def fetch(self, profile: RemoteProfile | None = None):
+        return self.submit(profile=profile).get_results()
 
 
 def _client_version():

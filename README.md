@@ -165,6 +165,39 @@ The login flow stores refreshable auth state locally under
 `~/.config/opencosmo/remote-auth.json` and automatically refreshes access tokens
 for future remote API calls.
 
+Remote queries still execute only when you call an explicit terminal method:
+
+```python
+import opencosmo as oc
+
+ds = (
+    oc.remote.open(
+        "Frontier-E",
+        ["halo_properties"],
+        product="snapshot",
+        steps=205,
+    )
+    .select("fof_halo_mass", "sod_halo_cdelta")
+    .fetch()
+)
+
+resp = (
+    oc.remote.open(
+        "Frontier-E",
+        ["halo_properties"],
+        product="snapshot",
+        steps=205,
+    )
+    .select("fof_halo_mass", "sod_halo_cdelta")
+    .submit()
+)
+status = resp.wait()
+ds = resp.get_results()
+```
+
+Use `fetch()` for the common one-shot flow, and `submit()` when you want the
+explicit asynchronous response object.
+
 ### Testing
 
 To run tests, first download the test data [from Google Drive](https://drive.google.com/drive/folders/1CYmZ4sE-RdhRdLhGuYR3rFfgyA3M1mU-?usp=sharing). Set environment variable `OPENCOSMO_DATA_PATH` to the path where the data is stored. Then run the tests with `pytest`:

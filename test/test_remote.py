@@ -24,6 +24,7 @@ from opencosmo.remote.client import (
     RemoteAuthorizationRequired,
     RemoteClient,
     RemoteError,
+    RemoteQueryResponse,
 )
 from opencosmo.remote.execution import execute_remote_query
 from opencosmo.remote.protocol import (
@@ -62,6 +63,29 @@ def test_remote_query_serializes_dataset_operations():
     ]
     assert request.operations[0].predicate.type == "compound"
     assert request.operations[2].columns == ("fof_halo_mass", "sod_halo_cdelta")
+
+
+def test_remote_query_construction_does_not_submit():
+    query = oc.remote.open(
+        "Frontier-E",
+        ["halo_properties"],
+        product="snapshot",
+        steps=205,
+    ).select("fof_halo_mass")
+
+    assert query.source.remote_dataset == "Frontier-E"
+    assert [operation.type for operation in query.operations] == ["select"]
+
+
+def test_remote_query_get_method_was_removed():
+    query = oc.remote.open(
+        "Frontier-E",
+        ["halo_properties"],
+        product="snapshot",
+        steps=205,
+    )
+
+    assert not hasattr(query, "get")
 
 
 def test_remote_query_request_accepts_legacy_structured_source_without_kind():
@@ -539,7 +563,9 @@ def test_remote_auth_status_loads_legacy_store_without_new_metadata_fields(
     assert loaded.session_required_policies == ()
 
 
-def test_remote_client_submit_status_and_result_download(monkeypatch, tmp_path):
+def test_remote_query_submit_returns_response_and_response_methods_still_work(
+    monkeypatch, tmp_path
+):
     calls = []
 
     class Response:
@@ -588,9 +614,69 @@ def test_remote_client_submit_status_and_result_download(monkeypatch, tmp_path):
         ["halo_properties"],
         product="snapshot",
         steps=205,
-    ).get(profile=profile)
+    ).submit(profile=profile)
+    assert isinstance(response, RemoteQueryResponse)
     assert response.get_status().status == "succeeded"
     assert response.get_results() == b"fake-hdf5"
+    assert calls == [
+        "https://example.test/queries",
+        "https://example.test/queries/job-1",
+        "https://example.test/results/job-1.hdf5",
+    ]
+
+
+def test_remote_query_fetch_submits_waits_downloads_and_opens(monkeypatch, tmp_path):
+    calls = []
+
+    class Response:
+        def __init__(self, data: bytes):
+            self.__data = data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return self.__data
+
+    def urlopen(req, timeout=None, context=None):
+        calls.append(req.full_url)
+        if req.full_url.endswith("/queries") and req.get_method() == "POST":
+            return Response(
+                json.dumps({"job_id": "job-1", "status": "queued"}).encode()
+            )
+        if req.full_url.endswith("/queries/job-1"):
+            return Response(
+                RemoteQueryStatus(
+                    job_id="job-1",
+                    status="succeeded",
+                    result_url="https://example.test/results/job-1.hdf5",
+                )
+                .model_dump_json()
+                .encode()
+            )
+        return Response(b"fake-hdf5")
+
+    def fake_open(path):
+        return Path(path).read_bytes()
+
+    monkeypatch.setattr("opencosmo.remote.client.request.urlopen", urlopen)
+    monkeypatch.setattr(oc, "open", fake_open)
+
+    profile = oc.remote.RemoteProfile(
+        base_url="https://example.test",
+        result_cache_dir=tmp_path,
+    )
+    result = oc.remote.open(
+        "Frontier-E",
+        ["halo_properties"],
+        product="snapshot",
+        steps=205,
+    ).fetch(profile=profile)
+
+    assert result == b"fake-hdf5"
     assert calls == [
         "https://example.test/queries",
         "https://example.test/queries/job-1",
@@ -651,7 +737,9 @@ def test_remote_client_submit_serializes_structured_and_file_collection_sources(
     assert "catalogs" not in payloads[1]["source"]
 
 
-def test_remote_query_uses_default_profile_when_unconfigured(monkeypatch, tmp_path):
+def test_remote_query_submit_uses_default_profile_when_unconfigured(
+    monkeypatch, tmp_path
+):
     monkeypatch.setattr("opencosmo.remote.client._default_profile", None)
     monkeypatch.setattr(
         "opencosmo.remote.client.DEFAULT_AUTH_STORAGE_PATH",
@@ -671,9 +759,10 @@ def test_remote_query_uses_default_profile_when_unconfigured(monkeypatch, tmp_pa
         ["halo_properties"],
         product="snapshot",
         steps=205,
-    ).get()
+    ).submit()
 
     assert response.job_id == "job-1"
+    assert isinstance(response, RemoteQueryResponse)
     assert calls == [f"{DEFAULT_REMOTE_BASE_URL}/queries"]
 
 
