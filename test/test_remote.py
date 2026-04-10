@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.error import HTTPError
 
 import astropy.units as u
+import numpy as np
 import pytest
 from click.testing import CliRunner
 from pydantic import ValidationError
@@ -28,13 +29,35 @@ from opencosmo.remote.client import (
     RemoteError,
     RemoteQueryResponse,
 )
-from opencosmo.remote.execution import execute_remote_query
+from opencosmo.remote.execution import execute_remote_query, replay_operation
 from opencosmo.remote.protocol import (
     FileCollectionSource,
     RemoteQueryRequest,
     RemoteQueryStatus,
     StructuredCatalogSource,
 )
+from opencosmo.column.column import DerivedColumn
+
+
+def _halo_paths(snapshot_path: Path) -> list[Path]:
+    files = ["haloproperties.hdf5", "haloparticles.hdf5", "sodproperties.hdf5"]
+    return [snapshot_path / file for file in files]
+
+
+def _galaxy_paths(snapshot_path: Path) -> list[Path]:
+    files = ["galaxyproperties.hdf5", "galaxyparticles.hdf5"]
+    return [snapshot_path / file for file in files]
+
+
+def _execute_and_open(query, resolver_paths: list[Path] | tuple[Path, ...], output_path: Path):
+    execute_remote_query(query.into_request(), lambda _source: resolver_paths, output_path)
+    return oc.open(output_path)
+
+
+def _require_test_paths(*paths: Path) -> None:
+    missing = [path for path in paths if not path.exists()]
+    if missing:
+        pytest.skip(f"test data not available: {missing[0]}")
 
 
 def test_remote_query_serializes_dataset_operations():
@@ -51,6 +74,7 @@ def test_remote_query_serializes_dataset_operations():
     )
 
     request = RemoteQueryRequest.model_validate(query.serialize())
+    payload = query.serialize()
 
     assert isinstance(request.source, StructuredCatalogSource)
     assert request.source.kind == "structured_catalog"
@@ -64,7 +88,48 @@ def test_remote_query_serializes_dataset_operations():
         "select",
     ]
     assert request.operations[0].predicate.type == "compound"
-    assert request.operations[2].columns == ("fof_halo_mass", "sod_halo_cdelta")
+    assert payload["operations"][2] == {
+        "type": "select",
+        "selection": {
+            "type": "leaf",
+            "columns": ["fof_halo_mass", "sod_halo_cdelta"],
+            "derived_columns": {},
+        },
+    }
+
+
+def test_remote_query_serializes_dataset_select_with_derived_columns():
+    payload = (
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties"],
+            product="snapshot",
+            steps=205,
+        )
+        .select(
+            "fof_halo_mass",
+            fof_halo_px=oc.col("fof_halo_mass") * oc.col("fof_halo_com_vx"),
+        )
+        .serialize()
+    )
+
+    assert payload["operations"] == [
+        {
+            "type": "select",
+            "selection": {
+                "type": "leaf",
+                "columns": ["fof_halo_mass"],
+                "derived_columns": {
+                    "fof_halo_px": {
+                        "type": "binary",
+                        "operator": "mul",
+                        "lhs": {"type": "column_ref", "column": "fof_halo_mass"},
+                        "rhs": {"type": "column_ref", "column": "fof_halo_com_vx"},
+                    }
+                },
+            },
+        }
+    ]
 
 
 def test_remote_query_construction_does_not_submit():
@@ -177,18 +242,174 @@ def test_remote_query_serializes_structure_collection_select_and_units():
     )
 
     request = RemoteQueryRequest.model_validate(query.serialize())
+    payload = query.serialize()
 
     select = request.operations[1]
-    assert select.columns_by_dataset["halo_properties"] == (
-        "fof_halo_mass",
-        "sod_halo_cdelta",
-    )
-    assert select.columns_by_dataset["dm_particles"] == ("x", "y", "z")
+    assert payload["operations"][1] == {
+        "type": "select",
+        "selection": {
+            "type": "tree",
+            "datasets": {
+                "halo_properties": {
+                    "type": "leaf",
+                    "columns": ["fof_halo_mass", "sod_halo_cdelta"],
+                    "derived_columns": {},
+                },
+                "dm_particles": {
+                    "type": "leaf",
+                    "columns": ["x", "y", "z"],
+                    "derived_columns": {},
+                },
+            },
+        },
+    }
+    assert select.selection.type == "tree"
 
     units = request.operations[2]
     assert units.convention == "physical"
     assert units.dataset_conversions["halo_properties"].columns["fof_halo_mass"] == "kg"
     assert units.dataset_conversions["dm_particles"].conversions["Mpc"] == "km"
+
+
+def test_remote_query_serializes_nested_structure_collection_select_with_derived_columns():
+    payload = (
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties", "halo_particles", "galaxyproperties", "galaxyparticles"],
+            product="snapshot",
+            steps=205,
+        )
+        .select(
+            halo_properties={
+                "columns": ["fof_halo_mass", "fof_halo_com_vx"],
+                "derived_columns": {
+                    "fof_halo_px": oc.col("fof_halo_mass") * oc.col("fof_halo_com_vx")
+                },
+            },
+            dm_particles=["x", "y", "z"],
+            galaxies={
+                "galaxy_properties": {
+                    "columns": ["gal_mass_star", "gal_com_vx"],
+                    "derived_columns": {
+                        "gal_star_px": oc.col("gal_mass_star") * oc.col("gal_com_vx")
+                    },
+                },
+                "star_particles": ["x", "y", "z"],
+            },
+        )
+        .serialize()
+    )
+
+    assert payload["operations"] == [
+        {
+            "type": "select",
+            "selection": {
+                "type": "tree",
+                "datasets": {
+                    "halo_properties": {
+                        "type": "leaf",
+                        "columns": ["fof_halo_mass", "fof_halo_com_vx"],
+                        "derived_columns": {
+                            "fof_halo_px": {
+                                "type": "binary",
+                                "operator": "mul",
+                                "lhs": {
+                                    "type": "column_ref",
+                                    "column": "fof_halo_mass",
+                                },
+                                "rhs": {
+                                    "type": "column_ref",
+                                    "column": "fof_halo_com_vx",
+                                },
+                            }
+                        },
+                    },
+                    "dm_particles": {
+                        "type": "leaf",
+                        "columns": ["x", "y", "z"],
+                        "derived_columns": {},
+                    },
+                    "galaxies": {
+                        "type": "tree",
+                        "datasets": {
+                            "galaxy_properties": {
+                                "type": "leaf",
+                                "columns": ["gal_mass_star", "gal_com_vx"],
+                                "derived_columns": {
+                                    "gal_star_px": {
+                                        "type": "binary",
+                                        "operator": "mul",
+                                        "lhs": {
+                                            "type": "column_ref",
+                                            "column": "gal_mass_star",
+                                        },
+                                        "rhs": {
+                                            "type": "column_ref",
+                                            "column": "gal_com_vx",
+                                        },
+                                    }
+                                },
+                            },
+                            "star_particles": {
+                                "type": "leaf",
+                                "columns": ["x", "y", "z"],
+                                "derived_columns": {},
+                            },
+                        },
+                    },
+                },
+            },
+        }
+    ]
+
+
+def test_remote_query_serializes_drop_take_range_and_with_datasets():
+    payload = (
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties", "halo_particles"],
+            product="snapshot",
+            steps=205,
+        )
+        .drop(halo_properties=["fof_halo_mass"], dm_particles=["x", "y"])
+        .take_range(2, 8)
+        .with_datasets(["halo_properties", "dm_particles", "halo_properties"])
+        .serialize()
+    )
+
+    assert payload["operations"] == [
+        {
+            "type": "drop",
+            "columns": [],
+            "columns_by_dataset": {
+                "halo_properties": ["fof_halo_mass"],
+                "dm_particles": ["x", "y"],
+            },
+        },
+        {"type": "take_range", "start": 2, "end": 8},
+        {"type": "with_datasets", "datasets": ["halo_properties", "dm_particles"]},
+    ]
+
+
+def test_remote_query_serializes_dataset_drop():
+    payload = (
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties"],
+            product="snapshot",
+            steps=205,
+        )
+        .drop("fof_halo_mass", "fof_halo_com_vx")
+        .serialize()
+    )
+
+    assert payload["operations"] == [
+        {
+            "type": "drop",
+            "columns": ["fof_halo_mass", "fof_halo_com_vx"],
+            "columns_by_dataset": {},
+        }
+    ]
 
 
 def test_remote_open_collection_serializes_file_collection_source():
@@ -227,6 +448,425 @@ def test_remote_query_request_rejects_client_supplied_paths():
     source_with_path = request["source"] | {"path": "/etc/passwd"}
     with pytest.raises(ValidationError):
         RemoteQueryRequest.model_validate(request | {"source": source_with_path})
+
+
+def test_remote_query_drop_rejects_mixed_positional_and_dataset_arguments():
+    with pytest.raises(ValueError, match="either positional columns or dataset keyword"):
+        (
+            oc.remote.open(
+                "Frontier-E",
+                ["halo_properties"],
+                product="snapshot",
+                steps=205,
+            ).drop("fof_halo_mass", halo_properties=["sod_halo_cdelta"])
+        )
+
+
+def test_remote_query_take_range_rejects_invalid_bounds():
+    query = oc.remote.open(
+        "Frontier-E",
+        ["halo_properties"],
+        product="snapshot",
+        steps=205,
+    )
+
+    with pytest.raises(ValidationError, match="start must be non-negative"):
+        query.take_range(-1, 5)
+
+    with pytest.raises(ValidationError, match="end must be greater than or equal to start"):
+        query.take_range(5, 4)
+
+
+def test_remote_query_with_datasets_rejects_empty_input():
+    query = oc.remote.open(
+        "Frontier-E",
+        ["halo_properties"],
+        product="snapshot",
+        steps=205,
+    )
+
+    with pytest.raises(ValidationError, match="datasets must not be empty"):
+        query.with_datasets([])
+
+
+def test_remote_query_select_rejects_empty_invocation():
+    with pytest.raises(ValueError, match="at least one selection"):
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties"],
+            product="snapshot",
+            steps=205,
+        ).select()
+
+
+def test_remote_query_select_rejects_dataset_selection_kwargs_in_dataset_mode():
+    with pytest.raises(ValueError, match="dataset selection"):
+        (
+            oc.remote.open(
+                "Frontier-E",
+                ["halo_properties"],
+                product="snapshot",
+                steps=205,
+            ).select("fof_halo_mass", halo_properties=["sod_halo_cdelta"])
+        )
+
+
+def test_remote_query_select_rejects_unsupported_derived_operations():
+    bad_expr = DerivedColumn(
+        oc.col("fof_halo_mass"),
+        oc.col("fof_halo_com_vx"),
+        lambda lhs, rhs: lhs + rhs,
+    )
+
+    with pytest.raises(ValueError, match="unsupported operation"):
+        (
+            oc.remote.open(
+                "Frontier-E",
+                ["halo_properties"],
+                product="snapshot",
+                steps=205,
+            ).select("fof_halo_mass", unsupported=bad_expr)
+        )
+
+
+def test_remote_query_select_rejects_non_default_log_and_exp_unit_containers():
+    query = oc.remote.open(
+        "Frontier-E",
+        ["halo_properties"],
+        product="snapshot",
+        steps=205,
+    )
+
+    with pytest.raises(ValueError, match="default DexUnit container"):
+        query.select(
+            "fof_halo_mass",
+            log_mass=oc.col("fof_halo_mass").log10(unit_container=u.MagUnit),
+        )
+
+    with pytest.raises(ValueError, match="default DexUnit container"):
+        query.select(
+            "fof_halo_mass",
+            exp_mass=oc.col("fof_halo_mass").exp10(expected_unit_container=u.MagUnit),
+        )
+
+
+def test_replay_operation_dispatches_tree_select_drop_take_range_and_with_datasets(
+    monkeypatch,
+):
+    events = []
+
+    class FakeStructureCollection:
+        def select(self, *args, **kwargs):
+            events.append(("select", args, kwargs))
+            return self
+
+        def drop(self, *args, **kwargs):
+            events.append(("drop", args, kwargs))
+            return self
+
+        def take_range(self, start, end):
+            events.append(("take_range", start, end))
+            return self
+
+        def with_datasets(self, datasets):
+            events.append(("with_datasets", tuple(datasets)))
+            return self
+
+    monkeypatch.setattr(oc, "StructureCollection", FakeStructureCollection)
+    data = FakeStructureCollection()
+
+    tree_select = (
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties", "halo_particles"],
+            product="snapshot",
+            steps=205,
+        )
+        .select(
+            halo_properties={
+                "columns": ["fof_halo_mass"],
+                "derived_columns": {
+                    "fof_halo_px": oc.col("fof_halo_mass") * oc.col("fof_halo_com_vx")
+                },
+            },
+            galaxies={"star_particles": ["x", "y", "z"]},
+        )
+        .operations[0]
+    )
+    drop = (
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties", "halo_particles"],
+            product="snapshot",
+            steps=205,
+        )
+        .drop(halo_properties=["fof_halo_mass"], dm_particles=["x"])
+        .operations[0]
+    )
+    take_range = (
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties"],
+            product="snapshot",
+            steps=205,
+        )
+        .take_range(3, 7)
+        .operations[0]
+    )
+    with_datasets = (
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties", "halo_particles"],
+            product="snapshot",
+            steps=205,
+        )
+        .with_datasets(["halo_properties", "dm_particles"])
+        .operations[0]
+    )
+
+    replay_operation(data, tree_select)
+    replay_operation(data, drop)
+    replay_operation(data, take_range)
+    replay_operation(data, with_datasets)
+
+    assert events[0][0] == "select"
+    assert events[0][2]["halo_properties"]["columns"] == ["fof_halo_mass"]
+    assert "fof_halo_px" in events[0][2]["halo_properties"]["derived_columns"]
+    assert events[0][2]["galaxies"] == {"star_particles": ("x", "y", "z")}
+    assert events[1] == (
+        "drop",
+        (),
+        {"halo_properties": ("fof_halo_mass",), "dm_particles": ("x",)},
+    )
+    assert events[2] == ("take_range", 3, 7)
+    assert events[3] == ("with_datasets", ("halo_properties", "dm_particles"))
+
+
+def test_replay_operation_reconstructs_derived_expression_behavior():
+    captured = {}
+
+    class FakeDataset:
+        def select(self, *args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return self
+
+    operation = (
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties"],
+            product="snapshot",
+            steps=205,
+        )
+        .select(
+            "fof_halo_mass",
+            px=((oc.col("fof_halo_mass") * oc.col("fof_halo_com_vx")) / 2).sqrt(),
+        )
+        .operations[0]
+    )
+
+    replay_operation(FakeDataset(), operation)
+
+    assert captured["args"] == ("fof_halo_mass",)
+    px = captured["kwargs"]["px"]
+    values = px.evaluate(
+        {
+            "fof_halo_mass": np.array([18.0]),
+            "fof_halo_com_vx": np.array([8.0]),
+        }
+    )
+    assert np.allclose(values, np.array([np.sqrt(72.0)]))
+
+
+def test_replay_operation_rejects_invalid_object_operation_combinations():
+    class FakeDataset:
+        def select(self, *args, **kwargs):
+            return self
+
+    tree_select = (
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties", "halo_particles"],
+            product="snapshot",
+            steps=205,
+        )
+        .select(halo_properties=["fof_halo_mass"])
+        .operations[0]
+    )
+    with_datasets = (
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties"],
+            product="snapshot",
+            steps=205,
+        )
+        .with_datasets(["halo_properties"])
+        .operations[0]
+    )
+
+    with pytest.raises(TypeError, match="nested select"):
+        replay_operation(FakeDataset(), tree_select)
+
+    with pytest.raises(TypeError, match="with_datasets"):
+        replay_operation(FakeDataset(), with_datasets)
+
+
+def test_remote_dataset_drop_matches_local_behavior(snapshot_path, tmp_path):
+    source_path = snapshot_path / "haloproperties.hdf5"
+    _require_test_paths(source_path)
+    local = oc.open(source_path).drop("fof_halo_mass")
+    remote = _execute_and_open(
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties"],
+            product="snapshot",
+            steps=205,
+        ).drop("fof_halo_mass"),
+        [source_path],
+        tmp_path / "remote-dataset-drop.hdf5",
+    )
+
+    assert set(remote.columns) == set(local.columns)
+    assert "fof_halo_mass" not in remote.columns
+
+
+def test_remote_lightcone_take_range_matches_local_behavior(lightcone_path, tmp_path):
+    paths = (
+        lightcone_path / "step_600" / "haloproperties.hdf5",
+        lightcone_path / "step_601" / "haloproperties.hdf5",
+    )
+    _require_test_paths(*paths)
+    local = oc.open(*paths).take_range(5, 20).select("fof_halo_mass", "redshift")
+    remote = _execute_and_open(
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties"],
+            product="lightcone",
+            steps=[600, 601],
+        ).take_range(5, 20),
+        paths,
+        tmp_path / "remote-lightcone-range.hdf5",
+    ).select("fof_halo_mass", "redshift")
+
+    local_data = local.get_data()
+    remote_data = remote.get_data()
+
+    assert len(remote) == len(local)
+    assert np.allclose(remote_data["fof_halo_mass"], local_data["fof_halo_mass"])
+    assert np.allclose(remote_data["redshift"], local_data["redshift"])
+
+
+def test_remote_structure_with_datasets_matches_local_behavior(snapshot_path, tmp_path):
+    paths = _halo_paths(snapshot_path)
+    _require_test_paths(*paths)
+    local = oc.open(*paths).with_datasets(["halo_properties", "dm_particles"])
+    remote = _execute_and_open(
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties", "halo_particles", "sod_properties"],
+            product="snapshot",
+            steps=205,
+        ).with_datasets(["halo_properties", "dm_particles"]),
+        paths,
+        tmp_path / "remote-structure-with-datasets.hdf5",
+    )
+
+    assert set(remote.keys()) == set(local.keys()) == {"halo_properties", "dm_particles"}
+
+
+def test_remote_nested_structure_select_with_derived_matches_local_behavior(
+    snapshot_path, tmp_path
+):
+    paths = _halo_paths(snapshot_path) + _galaxy_paths(snapshot_path)
+    _require_test_paths(*paths)
+    local = (
+        oc.open(*paths)
+        .filter(oc.col("fof_halo_mass") > 1e14)
+        .take(10)
+        .select(
+            halo_properties={
+                "columns": [
+                    "fof_halo_mass",
+                    "fof_halo_com_vx",
+                    "fof_halo_center_x",
+                    "fof_halo_center_y",
+                    "fof_halo_center_z",
+                ],
+                "derived_columns": {
+                    "fof_halo_px": oc.col("fof_halo_mass") * oc.col("fof_halo_com_vx")
+                },
+            },
+            dm_particles=["x", "y", "z"],
+            galaxies={
+                "galaxy_properties": {
+                    "columns": ["gal_mass_bar", "gal_mass_star", "gal_com_vx"],
+                    "derived_columns": {
+                        "gal_star_px": oc.col("gal_mass_star") * oc.col("gal_com_vx")
+                    },
+                },
+                "star_particles": ["x", "y", "z"],
+            },
+        )
+    )
+    remote = _execute_and_open(
+        oc.remote.open(
+            "Frontier-E",
+            [
+                "halo_properties",
+                "halo_particles",
+                "sod_properties",
+                "galaxy_properties",
+                "star_particles",
+            ],
+            product="snapshot",
+            steps=205,
+        )
+        .filter(oc.col("fof_halo_mass") > 1e14)
+        .take(10)
+        .select(
+            halo_properties={
+                "columns": [
+                    "fof_halo_mass",
+                    "fof_halo_com_vx",
+                    "fof_halo_center_x",
+                    "fof_halo_center_y",
+                    "fof_halo_center_z",
+                ],
+                "derived_columns": {
+                    "fof_halo_px": oc.col("fof_halo_mass") * oc.col("fof_halo_com_vx")
+                },
+            },
+            dm_particles=["x", "y", "z"],
+            galaxies={
+                "galaxy_properties": {
+                    "columns": ["gal_mass_bar", "gal_mass_star", "gal_com_vx"],
+                    "derived_columns": {
+                        "gal_star_px": oc.col("gal_mass_star") * oc.col("gal_com_vx")
+                    },
+                },
+                "star_particles": ["x", "y", "z"],
+            },
+        ),
+        paths,
+        tmp_path / "remote-nested-select.hdf5",
+    )
+
+    local_halo = next(iter(local.halos()))
+    remote_halo = next(iter(remote.halos()))
+
+    assert set(remote_halo["halo_properties"].keys()) == set(local_halo["halo_properties"].keys())
+    assert set(remote_halo["dm_particles"].columns) == set(local_halo["dm_particles"].columns)
+    assert set(remote_halo["galaxies"]["galaxy_properties"].columns) == set(
+        local_halo["galaxies"]["galaxy_properties"].columns
+    )
+    assert np.isclose(
+        remote_halo["halo_properties"]["fof_halo_px"].value,
+        local_halo["halo_properties"]["fof_halo_px"].value,
+    )
+    assert np.isclose(
+        remote_halo["galaxies"]["galaxy_properties"]["gal_star_px"].value,
+        local_halo["galaxies"]["galaxy_properties"]["gal_star_px"].value,
+    )
 
 
 def test_remote_auth_manual_token_flow(tmp_path):

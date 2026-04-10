@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 PROTOCOL_VERSION: Literal["1.0"] = "1.0"
@@ -91,17 +91,100 @@ class FilterOperation(BaseModel):
     predicate: Predicate
 
 
+class ColumnRefExpr(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["column_ref"] = "column_ref"
+    column: str
+
+
+class ScalarExpr(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["scalar"] = "scalar"
+    value: int | float
+
+    @field_validator("value")
+    @classmethod
+    def validate_scalar(cls, value: int | float):
+        if isinstance(value, bool):
+            raise ValueError("scalar values must be int or float")
+        return value
+
+
+class BinaryExpr(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["binary"] = "binary"
+    operator: Literal["add", "sub", "mul", "truediv", "pow"]
+    lhs: "DerivedExpr"
+    rhs: "DerivedExpr"
+
+
+class UnaryExpr(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["unary"] = "unary"
+    operator: Literal["sqrt", "log10", "exp10"]
+    operand: "DerivedExpr"
+
+
+DerivedExpr: TypeAlias = Annotated[
+    ColumnRefExpr | ScalarExpr | BinaryExpr | UnaryExpr,
+    Field(discriminator="type"),
+]
+
+
+class SelectionLeaf(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["leaf"] = "leaf"
+    columns: tuple[str, ...] = ()
+    derived_columns: dict[str, DerivedExpr] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_leaf(self):
+        if not self.columns and not self.derived_columns:
+            raise ValueError("SelectionLeaf must not be empty")
+        return self
+
+
+class SelectionTree(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["tree"] = "tree"
+    datasets: dict[str, "SelectionNode"] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_tree(self):
+        if not self.datasets:
+            raise ValueError("SelectionTree must not be empty")
+        return self
+
+
+SelectionNode: TypeAlias = Annotated[
+    SelectionLeaf | SelectionTree, Field(discriminator="type")
+]
+
+
 class SelectOperation(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     type: Literal["select"] = "select"
+    selection: SelectionNode
+
+
+class DropOperation(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["drop"] = "drop"
     columns: tuple[str, ...] = ()
     columns_by_dataset: dict[str, tuple[str, ...]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def validate_select(self):
-        if self.columns and self.columns_by_dataset:
-            raise ValueError("Use either columns or columns_by_dataset, not both")
+    def validate_drop(self):
+        if bool(self.columns) == bool(self.columns_by_dataset):
+            raise ValueError("Use either columns or columns_by_dataset")
         return self
 
 
@@ -119,12 +202,55 @@ class TakeOperation(BaseModel):
         return self
 
 
+class TakeRangeOperation(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["take_range"] = "take_range"
+    start: int
+    end: int
+
+    @model_validator(mode="after")
+    def validate_take_range(self):
+        if self.start < 0:
+            raise ValueError("start must be non-negative")
+        if self.end < self.start:
+            raise ValueError("end must be greater than or equal to start")
+        return self
+
+
 class SortByOperation(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     type: Literal["sort_by"] = "sort_by"
     column: str
     invert: bool = False
+
+
+class WithDatasetsOperation(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["with_datasets"] = "with_datasets"
+    datasets: tuple[str, ...]
+
+    @field_validator("datasets", mode="before")
+    @classmethod
+    def normalize_datasets(cls, value):
+        if isinstance(value, str):
+            value = (value,)
+        normalized = []
+        seen = set()
+        for dataset in value:
+            if dataset in seen:
+                continue
+            seen.add(dataset)
+            normalized.append(dataset)
+        return tuple(normalized)
+
+    @model_validator(mode="after")
+    def validate_datasets(self):
+        if not self.datasets:
+            raise ValueError("datasets must not be empty")
+        return self
 
 
 class UnitConversionSpec(BaseModel):
@@ -155,8 +281,11 @@ class BoundOperation(BaseModel):
 RemoteOperation: TypeAlias = Annotated[
     FilterOperation
     | SelectOperation
+    | DropOperation
     | TakeOperation
+    | TakeRangeOperation
     | SortByOperation
+    | WithDatasetsOperation
     | WithUnitsOperation
     | BoundOperation,
     Field(discriminator="type"),
@@ -198,3 +327,9 @@ class RemoteQueryStatus(BaseModel):
     updated_at: str | None = None
     message: str | None = None
     result_url: str | None = None
+
+
+SelectionTree.model_rebuild()
+BinaryExpr.model_rebuild()
+UnaryExpr.model_rebuild()
+SelectOperation.model_rebuild()

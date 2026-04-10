@@ -1,15 +1,25 @@
 from __future__ import annotations
 
+import operator as op
+from collections.abc import Iterable, Mapping
 from copy import copy
-from functools import reduce
+from functools import partial, reduce
 from importlib.metadata import PackageNotFoundError, version
-from typing import TYPE_CHECKING, Any, Iterable, Literal, Optional, cast
+from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 
 import astropy.units as u
 import numpy as np
 from pydantic import ValidationError
 
-from opencosmo.column.column import ColumnMask, CompoundColumnMask
+from opencosmo.column.column import (
+    Column,
+    ColumnMask,
+    CompoundColumnMask,
+    DerivedColumn,
+    _exp10,
+    _log10,
+    _sqrt,
+)
 from opencosmo.remote.client import (
     RemoteClient,
     RemoteQueryResponse,
@@ -20,25 +30,36 @@ from opencosmo.remote.protocol import (
     BoundOperation,
     ComparisonPredicate,
     CompoundPredicate,
+    DropOperation,
+    BinaryExpr,
+    ColumnRefExpr,
     FileCollectionSource,
     FilterOperation,
     QueryValue,
     RemoteQueryRequest,
+    ScalarExpr,
+    SelectionLeaf,
+    SelectionTree,
     SelectOperation,
     StructuredCatalogSource,
     SortByOperation,
     TakeOperation,
+    TakeRangeOperation,
     UnitConversionSpec,
+    UnaryExpr,
+    WithDatasetsOperation,
     WithUnitsOperation,
 )
 
 if TYPE_CHECKING:
     from opencosmo.remote.client import RemoteProfile
     from opencosmo.remote.protocol import (
+        DerivedExpr,
         Predicate,
         RemoteOperation,
         RemoteQueryProduct,
         RemoteQuerySource,
+        SelectionNode,
     )
 
 
@@ -105,32 +126,43 @@ class RemoteQuery:
     def select(
         self,
         *columns: str | Iterable[str],
-        **columns_by_dataset: str | Iterable[str] | dict,
+        **columns_or_derived: Any,
     ) -> RemoteQuery:
-        if columns and columns_by_dataset:
-            raise ValueError("Use either positional columns or columns_by_dataset.")
-        if not columns and not columns_by_dataset:
-            return self
+        if not columns and not columns_or_derived:
+            raise ValueError("Remote select requires at least one selection.")
         if columns:
+            _validate_remote_dataset_select_kwargs(columns_or_derived)
             return self.__with_operation(
-                SelectOperation(columns=_flatten_columns(columns))
+                SelectOperation(
+                    selection=SelectionLeaf(
+                        columns=_flatten_columns(columns),
+                        derived_columns=_serialize_derived_columns(columns_or_derived),
+                    )
+                )
             )
+        return self.__with_operation(
+            SelectOperation(selection=_selection_tree_from_input(columns_or_derived))
+        )
 
-        selections = {}
-        for dataset, selection in columns_by_dataset.items():
-            if isinstance(selection, dict):
-                if selection.get("derived_columns"):
-                    raise ValueError("Remote select does not support derived columns.")
-                selection = selection.get("columns", ())
-            selections[dataset] = _normalize_columns(selection)
-        return self.__with_operation(SelectOperation(columns_by_dataset=selections))
+    def drop(
+        self,
+        *columns: str | Iterable[str],
+        **columns_by_dataset: str | Iterable[str],
+    ) -> RemoteQuery:
+        return self.__with_operation(_normalize_drop_operation(columns, columns_by_dataset))
 
     def take(self, n: int, at: str = "random") -> RemoteQuery:
         at = _validate_take_position(at)
         return self.__with_operation(TakeOperation(n=n, at=at))
 
+    def take_range(self, start: int, end: int) -> RemoteQuery:
+        return self.__with_operation(TakeRangeOperation(start=start, end=end))
+
     def sort_by(self, column: str, invert: bool = False) -> RemoteQuery:
         return self.__with_operation(SortByOperation(column=column, invert=invert))
+
+    def with_datasets(self, datasets: str | Iterable[str]) -> RemoteQuery:
+        return self.__with_operation(WithDatasetsOperation(datasets=_normalize_datasets(datasets)))
 
     def with_units(
         self,
@@ -263,6 +295,183 @@ def _normalize_columns(columns) -> tuple[str, ...]:
     if columns is None:
         return ()
     return tuple(columns)
+
+
+def _normalize_datasets(datasets: str | Iterable[str]) -> tuple[str, ...]:
+    if isinstance(datasets, str):
+        return (datasets,)
+
+    normalized = []
+    seen = set()
+    for dataset in datasets:
+        if dataset in seen:
+            continue
+        seen.add(dataset)
+        normalized.append(dataset)
+    return tuple(normalized)
+
+
+def _normalize_drop_operation(
+    columns: tuple[str | Iterable[str], ...],
+    columns_by_dataset: Mapping[str, str | Iterable[str]],
+):
+    if columns and columns_by_dataset:
+        raise ValueError(
+            "Remote drop accepts either positional columns or dataset keyword columns."
+        )
+    if not columns and not columns_by_dataset:
+        raise ValueError("Remote drop requires at least one column selection.")
+    if columns:
+        return DropOperation(columns=_flatten_columns(columns))
+
+    normalized = {}
+    for dataset, selection in columns_by_dataset.items():
+        if isinstance(selection, dict):
+            raise ValueError("Remote drop does not support nested dataset selections.")
+        normalized[dataset] = _normalize_columns(selection)
+    return DropOperation(columns_by_dataset=normalized)
+
+
+def _validate_remote_dataset_select_kwargs(columns_or_derived: Mapping[str, Any]):
+    for name, value in columns_or_derived.items():
+        if _looks_like_dataset_selection(value):
+            raise ValueError(
+                f"Remote select keyword '{name}' looks like a dataset selection. "
+                "When positional columns are provided, keyword arguments must be derived columns."
+            )
+
+
+def _looks_like_dataset_selection(value: Any) -> bool:
+    if isinstance(value, (dict, str)):
+        return True
+    if isinstance(value, (Column, DerivedColumn)):
+        return False
+    if not isinstance(value, Iterable):
+        return False
+
+    try:
+        values = tuple(value)
+    except TypeError:
+        return False
+    return bool(values) and all(isinstance(item, str) for item in values)
+
+
+def _selection_tree_from_input(selection: Mapping[str, Any]) -> SelectionTree:
+    return SelectionTree(
+        datasets={
+            dataset: _selection_node_from_input(node, path=dataset)
+            for dataset, node in selection.items()
+        }
+    )
+
+
+def _selection_node_from_input(node: Any, *, path: str) -> SelectionNode:
+    if isinstance(node, Mapping):
+        leaf_keys = {"columns", "derived_columns"}
+        if set(node).intersection(leaf_keys):
+            extra_keys = set(node).difference(leaf_keys)
+            if extra_keys:
+                raise ValueError(
+                    f"Remote select leaf '{path}' only supports 'columns' and 'derived_columns'."
+                )
+            columns = _normalize_columns(node.get("columns"))
+            derived_columns = node.get("derived_columns", {})
+            if not isinstance(derived_columns, Mapping):
+                raise ValueError(
+                    f"Remote select leaf '{path}.derived_columns' must be a mapping."
+                )
+            return SelectionLeaf(
+                columns=columns,
+                derived_columns=_serialize_derived_columns(
+                    derived_columns, path=f"{path}.derived_columns"
+                ),
+            )
+
+        return SelectionTree(
+            datasets={
+                dataset: _selection_node_from_input(child, path=f"{path}.{dataset}")
+                for dataset, child in node.items()
+            }
+        )
+
+    return SelectionLeaf(columns=_normalize_columns(node))
+
+
+def _serialize_derived_columns(
+    derived_columns: Mapping[str, Any],
+    *,
+    path: str = "derived_columns",
+) -> dict[str, DerivedExpr]:
+    return {
+        name: _derived_expr_from_python(value, path=f"{path}.{name}")
+        for name, value in derived_columns.items()
+    }
+
+
+def _derived_expr_from_python(expr: Any, *, path: str) -> DerivedExpr:
+    match expr:
+        case Column():
+            return ColumnRefExpr(column=expr.column_name)
+        case DerivedColumn():
+            return _serialize_derived_column(expr, path=path)
+        case int() | float():
+            if isinstance(expr, bool):
+                raise ValueError(
+                    f"Remote derived expression '{path}' only supports int and float scalars."
+                )
+            return ScalarExpr(value=expr)
+        case _:
+            raise ValueError(
+                f"Remote derived expression '{path}' must be a Column or DerivedColumn expression tree."
+            )
+
+
+def _serialize_derived_column(expr: DerivedColumn, *, path: str) -> DerivedExpr:
+    operation = expr.operation
+    binary_operator = {
+        op.add: "add",
+        op.sub: "sub",
+        op.mul: "mul",
+        op.truediv: "truediv",
+        op.pow: "pow",
+    }.get(operation)
+    if binary_operator is not None:
+        return BinaryExpr(
+            operator=binary_operator,
+            lhs=_derived_expr_from_python(expr.lhs, path=f"{path}.lhs"),
+            rhs=_derived_expr_from_python(expr.rhs, path=f"{path}.rhs"),
+        )
+
+    if operation is _sqrt:
+        return UnaryExpr(
+            operator="sqrt",
+            operand=_derived_expr_from_python(expr.lhs, path=f"{path}.operand"),
+        )
+
+    if isinstance(operation, partial) and operation.func is _log10:
+        if operation.keywords != {"unit_container": u.DexUnit}:
+            raise ValueError(
+                f"Remote derived expression '{path}' only supports log10() with the default DexUnit container."
+            )
+        return UnaryExpr(
+            operator="log10",
+            operand=_derived_expr_from_python(expr.lhs, path=f"{path}.operand"),
+        )
+
+    if isinstance(operation, partial) and operation.func is _exp10:
+        if operation.keywords != {"expected_unit_container": u.DexUnit}:
+            raise ValueError(
+                f"Remote derived expression '{path}' only supports exp10() with the default DexUnit container."
+            )
+        return UnaryExpr(
+            operator="exp10",
+            operand=_derived_expr_from_python(expr.lhs, path=f"{path}.operand"),
+        )
+
+    name = getattr(operation, "__name__", repr(operation))
+    raise ValueError(
+        f"Remote derived expression '{path}' uses unsupported operation {name!r}."
+    )
 
 
 def _serialize_unit_mapping(conversions: dict[u.Unit, u.Unit]) -> dict[str, str]:

@@ -177,18 +177,42 @@ ds = (
         product="snapshot",
         steps=205,
     )
-    .select("fof_halo_mass", "sod_halo_cdelta")
+    .select(
+        "fof_halo_mass",
+        "fof_halo_com_vx",
+        fof_halo_px=oc.col("fof_halo_mass") * oc.col("fof_halo_com_vx"),
+    )
+    .drop("fof_halo_com_vx")
+    .take_range(0, 100)
     .fetch()
 )
 
 resp = (
     oc.remote.open(
         "Frontier-E",
-        ["halo_properties"],
+        ["halo_properties", "halo_particles", "galaxy_properties", "star_particles"],
         product="snapshot",
         steps=205,
     )
-    .select("fof_halo_mass", "sod_halo_cdelta")
+    .with_datasets(["halo_properties", "dm_particles", "galaxies"])
+    .select(
+        halo_properties={
+            "columns": ["fof_halo_mass", "fof_halo_com_vx"],
+            "derived_columns": {
+                "fof_halo_px": oc.col("fof_halo_mass") * oc.col("fof_halo_com_vx")
+            },
+        },
+        dm_particles=["x", "y", "z"],
+        galaxies={
+            "galaxy_properties": {
+                "columns": ["gal_mass_star", "gal_com_vx"],
+                "derived_columns": {
+                    "gal_star_px": oc.col("gal_mass_star") * oc.col("gal_com_vx")
+                },
+            },
+            "star_particles": ["x", "y", "z"],
+        },
+    )
     .submit()
 )
 status = resp.wait()
