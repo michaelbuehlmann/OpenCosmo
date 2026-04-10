@@ -40,10 +40,11 @@ def execute_remote_query(
     elif isinstance(request, dict):
         request = RemoteQueryRequest.model_validate(request)
 
-    paths = resolver(request.source)
+    source = request.source
+    paths = tuple(resolver(source))
     import opencosmo as oc
 
-    result = oc.open(*paths, **request.source.open_kwargs)
+    result = oc.open(*paths, **source.open_kwargs)
     for operation in request.operations:
         result = replay_operation(result, operation)
 

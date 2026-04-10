@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import copy
 from functools import reduce
 from importlib.metadata import PackageNotFoundError, version
-from typing import TYPE_CHECKING, Iterable, Literal, Optional, cast
+from typing import TYPE_CHECKING, Any, Iterable, Literal, Optional, cast
 
 import astropy.units as u
 import numpy as np
@@ -19,11 +19,13 @@ from opencosmo.remote.protocol import (
     BoundOperation,
     ComparisonPredicate,
     CompoundPredicate,
+    FileCollectionSource,
     FilterOperation,
     QueryValue,
     RemoteQueryRequest,
     RemoteQuerySource,
     SelectOperation,
+    StructuredCatalogSource,
     SortByOperation,
     TakeOperation,
     UnitConversionSpec,
@@ -47,11 +49,22 @@ def open(
     steps: int | Iterable[int],
 ) -> RemoteQuery:
     return RemoteQuery(
-        RemoteQuerySource(
+        StructuredCatalogSource(
             remote_dataset=remote_dataset,
             product=product,
             steps=_normalize_steps(steps),
             catalogs=tuple(catalogs),
+        )
+    )
+
+
+def open_collection(
+    remote_dataset: str, *, open_kwargs: dict[str, Any] | None = None
+) -> RemoteQuery:
+    return RemoteQuery(
+        FileCollectionSource(
+            remote_dataset=remote_dataset,
+            open_kwargs=open_kwargs or {},
         )
     )
 
@@ -66,11 +79,11 @@ class RemoteQuery:
         self.__operations = operations
 
     @property
-    def source(self):
+    def source(self) -> RemoteQuerySource:
         return self.__source
 
     @property
-    def operations(self):
+    def operations(self) -> tuple[RemoteOperation, ...]:
         return self.__operations
 
     def __with_operation(self, operation: RemoteOperation):

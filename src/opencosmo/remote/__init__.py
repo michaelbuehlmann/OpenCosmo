@@ -11,15 +11,18 @@ from .client import (
 )
 from .execution import execute_remote_query, replay_operation
 from .protocol import (
+    FileCollectionSource,
     RemoteQueryAccepted,
     RemoteQueryProduct,
     RemoteQueryRequest,
     RemoteQuerySource,
     RemoteQueryStatus,
+    StructuredCatalogSource,
 )
-from .query import RemoteQuery, open
+from .query import RemoteQuery, open, open_collection
 
 __all__ = [
+    "FileCollectionSource",
     "RemoteClient",
     "RemoteAuthorizationRequired",
     "RemoteError",
@@ -32,10 +35,12 @@ __all__ = [
     "RemoteQueryResponse",
     "RemoteQuerySource",
     "RemoteQueryStatus",
+    "StructuredCatalogSource",
     "auth",
     "configure",
     "execute_remote_query",
     "get_profile",
     "open",
+    "open_collection",
     "replay_operation",
 ]

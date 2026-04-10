@@ -12,9 +12,10 @@ TakePosition: TypeAlias = Literal["start", "end", "random"]
 RemoteQueryProduct: TypeAlias = Literal["snapshot", "lightcone"]
 
 
-class RemoteQuerySource(BaseModel):
+class StructuredCatalogSource(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    kind: Literal["structured_catalog"] = "structured_catalog"
     remote_dataset: str
     product: RemoteQueryProduct
     steps: tuple[int, ...]
@@ -32,6 +33,25 @@ class RemoteQuerySource(BaseModel):
         if not self.catalogs:
             raise ValueError("catalogs must not be empty")
         return self
+
+
+class FileCollectionSource(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: Literal["file_collection"] = "file_collection"
+    remote_dataset: str
+    open_kwargs: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_source(self):
+        if not self.remote_dataset:
+            raise ValueError("remote_dataset must not be empty")
+        return self
+
+
+RemoteQuerySource: TypeAlias = Annotated[
+    StructuredCatalogSource | FileCollectionSource, Field(discriminator="kind")
+]
 
 
 class QueryValue(BaseModel):
@@ -150,6 +170,16 @@ class RemoteQueryRequest(BaseModel):
     client_version: str
     source: RemoteQuerySource
     operations: tuple[RemoteOperation, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_source_kind(cls, data):
+        if not isinstance(data, dict):
+            return data
+        source = data.get("source")
+        if not isinstance(source, dict) or "kind" in source:
+            return data
+        return data | {"source": {"kind": "structured_catalog"} | source}
 
 
 class RemoteQueryAccepted(BaseModel):

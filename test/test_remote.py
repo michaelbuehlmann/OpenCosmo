@@ -26,7 +26,12 @@ from opencosmo.remote.client import (
     RemoteError,
 )
 from opencosmo.remote.execution import execute_remote_query
-from opencosmo.remote.protocol import RemoteQueryRequest, RemoteQueryStatus
+from opencosmo.remote.protocol import (
+    FileCollectionSource,
+    RemoteQueryRequest,
+    RemoteQueryStatus,
+    StructuredCatalogSource,
+)
 
 
 def test_remote_query_serializes_dataset_operations():
@@ -44,6 +49,8 @@ def test_remote_query_serializes_dataset_operations():
 
     request = RemoteQueryRequest.model_validate(query.serialize())
 
+    assert isinstance(request.source, StructuredCatalogSource)
+    assert request.source.kind == "structured_catalog"
     assert request.source.remote_dataset == "Frontier-E"
     assert request.source.product == "snapshot"
     assert request.source.steps == (205,)
@@ -55,6 +62,72 @@ def test_remote_query_serializes_dataset_operations():
     ]
     assert request.operations[0].predicate.type == "compound"
     assert request.operations[2].columns == ("fof_halo_mass", "sod_halo_cdelta")
+
+
+def test_remote_query_request_accepts_legacy_structured_source_without_kind():
+    request = RemoteQueryRequest.model_validate(
+        {
+            "protocol_version": "1.0",
+            "client_version": "test-client",
+            "source": {
+                "remote_dataset": "Frontier-E",
+                "product": "snapshot",
+                "steps": [205],
+                "catalogs": ["halo_properties"],
+                "open_kwargs": {"synth_cores": True},
+            },
+            "operations": [],
+        }
+    )
+
+    assert isinstance(request.source, StructuredCatalogSource)
+    assert request.source.kind == "structured_catalog"
+    assert request.source.product == "snapshot"
+    assert request.source.steps == (205,)
+    assert request.source.catalogs == ("halo_properties",)
+    assert request.source.open_kwargs == {"synth_cores": True}
+
+
+def test_remote_query_request_accepts_explicit_structured_source_kind():
+    request = RemoteQueryRequest.model_validate(
+        {
+            "protocol_version": "1.0",
+            "client_version": "test-client",
+            "source": {
+                "kind": "structured_catalog",
+                "remote_dataset": "Frontier-E",
+                "product": "snapshot",
+                "steps": [205],
+                "catalogs": ["halo_properties"],
+            },
+            "operations": [],
+        }
+    )
+
+    assert isinstance(request.source, StructuredCatalogSource)
+    assert request.source.kind == "structured_catalog"
+    assert request.source.steps == (205,)
+    assert request.source.catalogs == ("halo_properties",)
+
+
+def test_remote_query_request_accepts_file_collection_source_kind():
+    request = RemoteQueryRequest.model_validate(
+        {
+            "protocol_version": "1.0",
+            "client_version": "test-client",
+            "source": {
+                "kind": "file_collection",
+                "remote_dataset": "LastJourney-Diffsky-COSMOS-2026-02-17",
+                "open_kwargs": {"synth_cores": True},
+            },
+            "operations": [],
+        }
+    )
+
+    assert isinstance(request.source, FileCollectionSource)
+    assert request.source.kind == "file_collection"
+    assert request.source.remote_dataset == "LastJourney-Diffsky-COSMOS-2026-02-17"
+    assert request.source.open_kwargs == {"synth_cores": True}
 
 
 def test_remote_query_serializes_structure_collection_select_and_units():
@@ -90,6 +163,24 @@ def test_remote_query_serializes_structure_collection_select_and_units():
     assert units.convention == "physical"
     assert units.dataset_conversions["halo_properties"].columns["fof_halo_mass"] == "kg"
     assert units.dataset_conversions["dm_particles"].conversions["Mpc"] == "km"
+
+
+def test_remote_open_collection_serializes_file_collection_source():
+    query = oc.remote.open_collection(
+        "LastJourney-Diffsky-COSMOS-2026-02-17",
+        open_kwargs={"synth_cores": True},
+    ).select("ra", "dec")
+
+    request = RemoteQueryRequest.model_validate(query.serialize())
+    payload = query.serialize()
+
+    assert isinstance(request.source, FileCollectionSource)
+    assert request.source.kind == "file_collection"
+    assert request.source.remote_dataset == "LastJourney-Diffsky-COSMOS-2026-02-17"
+    assert request.source.open_kwargs == {"synth_cores": True}
+    assert payload["source"]["kind"] == "file_collection"
+    assert "steps" not in payload["source"]
+    assert "catalogs" not in payload["source"]
 
 
 def test_remote_query_request_rejects_client_supplied_paths():
@@ -507,6 +598,59 @@ def test_remote_client_submit_status_and_result_download(monkeypatch, tmp_path):
     ]
 
 
+def test_remote_client_submit_serializes_structured_and_file_collection_sources(
+    monkeypatch,
+):
+    payloads = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return json.dumps({"job_id": "job-1", "status": "queued"}).encode()
+
+    def urlopen(req, timeout=None, context=None):
+        payloads.append(json.loads(req.data.decode("utf-8")))
+        return Response()
+
+    monkeypatch.setattr("opencosmo.remote.client.request.urlopen", urlopen)
+
+    client = RemoteClient(oc.remote.RemoteProfile(base_url="https://example.test"))
+    client.submit(
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties"],
+            product="snapshot",
+            steps=205,
+        ).into_request()
+    )
+    client.submit(
+        oc.remote.open_collection(
+            "LastJourney-Diffsky-COSMOS-2026-02-17",
+            open_kwargs={"synth_cores": True},
+        )
+        .take(10, at="start")
+        .into_request()
+    )
+
+    assert payloads[0]["source"]["kind"] == "structured_catalog"
+    assert payloads[0]["source"]["product"] == "snapshot"
+    assert payloads[0]["source"]["steps"] == [205]
+    assert payloads[0]["source"]["catalogs"] == ["halo_properties"]
+
+    assert payloads[1]["source"]["kind"] == "file_collection"
+    assert payloads[1]["source"]["remote_dataset"] == (
+        "LastJourney-Diffsky-COSMOS-2026-02-17"
+    )
+    assert payloads[1]["source"]["open_kwargs"] == {"synth_cores": True}
+    assert "steps" not in payloads[1]["source"]
+    assert "catalogs" not in payloads[1]["source"]
+
+
 def test_remote_query_uses_default_profile_when_unconfigured(monkeypatch, tmp_path):
     monkeypatch.setattr("opencosmo.remote.client._default_profile", None)
     monkeypatch.setattr(
@@ -883,6 +1027,58 @@ def test_execute_remote_query_replays_through_existing_open_and_write(monkeypatc
         ("Frontier-E_snapshot_205_halo_properties.hdf5",),
         {"synth_cores": True},
     )
+    assert events[-1] == ("write", Path("result.hdf5"), True)
+
+
+def test_execute_remote_query_replays_file_collection_sources(
+    monkeypatch, diffsky_path
+):
+    events = []
+    diffsky_files = (diffsky_path / "lj_475.hdf5", diffsky_path / "lj_487.hdf5")
+
+    class FakeData:
+        def take(self, n, at="random"):
+            events.append(("take", n, at))
+            return self
+
+        def select(self, *args, **kwargs):
+            events.append(("select", args, kwargs))
+            return self
+
+    def fake_open(*paths, **kwargs):
+        events.append(("open", paths, kwargs))
+        return FakeData()
+
+    def fake_write(path, dataset):
+        events.append(("write", Path(path), isinstance(dataset, FakeData)))
+
+    monkeypatch.setattr(oc, "open", fake_open)
+    monkeypatch.setattr(oc, "write", fake_write)
+
+    request = (
+        oc.remote.open_collection(
+            "LastJourney-Diffsky-COSMOS-2026-02-17",
+            open_kwargs={"synth_cores": True},
+        )
+        .select("ra", "dec")
+        .take(5, at="start")
+        .into_request()
+    )
+
+    def resolver(source):
+        events.append(("resolve", source.kind, source.remote_dataset))
+        assert isinstance(source, FileCollectionSource)
+        return diffsky_files
+
+    output_path = execute_remote_query(request, resolver, "result.hdf5")
+
+    assert output_path == Path("result.hdf5")
+    assert events[0] == (
+        "resolve",
+        "file_collection",
+        "LastJourney-Diffsky-COSMOS-2026-02-17",
+    )
+    assert events[1] == ("open", diffsky_files, {"synth_cores": True})
     assert events[-1] == ("write", Path("result.hdf5"), True)
 
 
