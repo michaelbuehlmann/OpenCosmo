@@ -220,8 +220,9 @@ ds = resp.get_results()
 ```
 
 Blocking calls such as `fetch()`, `wait()`, and `get_results()` now print
-timestamped state transitions while the remote job is pending. In notebooks the
-status output updates in place.
+timestamped state transitions while the remote job is pending, including elapsed
+time since the previous state and since submission. In notebooks the status
+output updates in place as a growing log so each transition stays visible.
 
 ```python
 status = resp.wait(show_status=False)

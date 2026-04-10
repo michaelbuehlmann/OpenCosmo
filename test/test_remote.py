@@ -1501,9 +1501,9 @@ def test_remote_query_fetch_reports_timestamped_status_transitions(
     assert result == b"fake-hdf5"
     assert capsys.readouterr().err.splitlines() == [
         "[12:00:00] Remote query job-1 submitted",
-        "[12:00:01] Remote query job-1 queued",
-        "[12:00:02] Remote query job-1 running",
-        "[12:00:03] Remote query job-1 succeeded",
+        "[12:00:01] Remote query job-1 queued (1s since submitted, 1s total)",
+        "[12:00:02] Remote query job-1 running (1s since queued, 2s total)",
+        "[12:00:03] Remote query job-1 succeeded (1s since running, 3s total)",
     ]
     assert calls == [
         "https://example.test/queries",
@@ -1553,8 +1553,8 @@ def test_remote_query_wait_uses_initial_accepted_status_once(
     assert status.status == "succeeded"
     assert capsys.readouterr().err.splitlines() == [
         "[12:01:00] Remote query job-1 submitted",
-        "[12:01:01] Remote query job-1 running",
-        "[12:01:02] Remote query job-1 succeeded",
+        "[12:01:01] Remote query job-1 running (1s since submitted, 1s total)",
+        "[12:01:02] Remote query job-1 succeeded (1s since running, 2s total)",
     ]
 
 
@@ -1657,8 +1657,8 @@ def test_remote_query_fetch_reports_failed_status_before_raising(
     )
     assert capsys.readouterr().err.splitlines() == [
         "[12:02:00] Remote query job-1 submitted",
-        "[12:02:01] Remote query job-1 queued",
-        "[12:02:02] Remote query job-1 failed: Remote query failed.",
+        "[12:02:01] Remote query job-1 queued (1s since submitted, 1s total)",
+        "[12:02:02] Remote query job-1 failed: Remote query failed. (1s since queued, 2s total)",
     ]
 
 
@@ -1700,8 +1700,8 @@ def test_remote_query_failed_status_line_uses_error_detail_when_message_missing(
 
     assert capsys.readouterr().err.splitlines() == [
         "[12:03:00] Remote query job-1 submitted",
-        "[12:03:01] Remote query job-1 queued",
-        "[12:03:02] Remote query job-1 failed: RuntimeError: worker exploded",
+        "[12:03:01] Remote query job-1 queued (1s since submitted, 1s total)",
+        "[12:03:02] Remote query job-1 failed: RuntimeError: worker exploded (1s since queued, 2s total)",
     ]
 
 
@@ -1746,13 +1746,18 @@ def test_status_display_uses_single_notebook_handle(monkeypatch):
         "_get_notebook_handle_class",
         lambda: FakeHandle,
     )
+    monkeypatch.setattr(
+        remote_status_display,
+        "_get_notebook_text_renderer",
+        lambda: (lambda text: text),
+    )
 
     sink = remote_status_display.create_status_sink()
     sink.emit("first")
     sink.emit("second")
     sink.close()
 
-    assert events == [("display", "first"), ("update", "second")]
+    assert events == [("display", "first"), ("update", "first\nsecond")]
 
 
 def test_status_display_falls_back_to_stderr_when_not_in_notebook():
