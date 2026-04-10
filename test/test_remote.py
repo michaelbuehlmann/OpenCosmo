@@ -525,6 +525,18 @@ def test_remote_auth_status_without_profile_uses_default_remote(
     assert status.base_url == DEFAULT_REMOTE_BASE_URL
 
 
+def test_get_profile_uses_less_aggressive_default_poll_interval(monkeypatch, tmp_path):
+    monkeypatch.setattr("opencosmo.remote.client._default_profile", None)
+    monkeypatch.setattr(
+        "opencosmo.remote.client.DEFAULT_AUTH_STORAGE_PATH",
+        tmp_path / "remote-auth.json",
+    )
+
+    profile = oc.remote.get_profile()
+
+    assert profile.poll_interval_s == 15.0
+
+
 def test_remote_auth_status_loads_legacy_store_without_new_metadata_fields(
     monkeypatch, tmp_path
 ):

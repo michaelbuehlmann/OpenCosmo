@@ -58,7 +58,7 @@ class RemoteProfile:
     headers: Mapping[str, str] = field(default_factory=dict)
     token: str | None = None
     timeout_s: float = 30.0
-    poll_interval_s: float = 2.0
+    poll_interval_s: float = 15.0
     verify_ssl: bool = True
     result_cache_dir: Path = Path.home() / ".cache" / "opencosmo" / "remote"
     auth_client_id: str = DEFAULT_AUTH_CLIENT_ID
