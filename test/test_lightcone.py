@@ -5,6 +5,7 @@ from astropy.cosmology import units as cu
 from numpy import random
 
 import opencosmo as oc
+from opencosmo.collection.lightcone.coordinates import make_radec_columns
 
 
 @pytest.fixture
@@ -44,6 +45,19 @@ def test_create_theta_phi_coords(haloproperties_600_path, haloproperties_601_pat
     assert np.allclose(data["dec"], dec, rtol=1e-2)
 
 
+def test_make_radec_columns_returns_dataset_when_coordinates_missing():
+    class DummyLightcone:
+        columns = ["ra", "ra_times_two"]
+
+    with pytest.warns(
+        UserWarning,
+        match="Could not find coordinates in this catalog",
+    ):
+        result = make_radec_columns(DummyLightcone())
+
+    assert isinstance(result, DummyLightcone)
+
+
 def test_lightcone_physical_units(haloproperties_600_path):
     ds_comoving = oc.open(haloproperties_600_path)
     ds_physical = ds_comoving.with_units("physical")
@@ -81,6 +95,24 @@ def test_lc_collection_write(
     assert data.min() >= 0.04 and data.max() <= 0.0405
     assert len(data) == original_length
     assert ds.z_range == (0.04, 0.0405)
+
+
+def test_lc_collection_write_without_full_coordinates(
+    haloproperties_600_path, haloproperties_601_path, tmp_path
+):
+    ds = oc.open(haloproperties_601_path, haloproperties_600_path)
+    ds = ds.select("ra", ra_times_two=oc.col("ra") * 2).take(5, at="start")
+
+    oc.write(tmp_path / "lightcone.hdf5", ds)
+    with pytest.warns(
+        UserWarning,
+        match="Could not find coordinates in this catalog",
+    ):
+        reopened = oc.open(tmp_path / "lightcone.hdf5")
+
+    assert reopened is not None
+    assert reopened.columns == ["ra", "ra_times_two"]
+    assert len(reopened) == 5
 
 
 def test_lc_collection_select(

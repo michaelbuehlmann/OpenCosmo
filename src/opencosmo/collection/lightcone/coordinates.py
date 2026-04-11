@@ -21,6 +21,7 @@ def make_radec_columns(dataset: oc.Lightcone):
         warnings.warn(
             "Could not find coordinates in this catalog. Spatial queries will not be available"
         )
+        return dataset
 
 
 def radec_from_thetaphi(theta, phi):
