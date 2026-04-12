@@ -281,7 +281,7 @@ def _predicate_from_mask(mask: ColumnMask | CompoundColumnMask) -> Predicate:
     match mask:
         case ColumnMask():
             return ComparisonPredicate(
-                column=mask.column_name,
+                column=mask.name,
                 operator=mask.comparison_operator,
                 value=_serialize_value(mask.value),
             )
@@ -440,7 +440,7 @@ def _serialize_derived_columns(
 def _derived_expr_from_python(expr: Any, *, path: str) -> DerivedExpr:
     match expr:
         case Column():
-            return ColumnRefExpr(column=expr.column_name)
+            return ColumnRefExpr(column=expr.name)
         case DerivedColumn():
             return _serialize_derived_column(expr, path=path)
         case int() | float():
