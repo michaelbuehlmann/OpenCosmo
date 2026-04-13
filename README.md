@@ -199,6 +199,7 @@ resp = (
         product="snapshot",
         steps=205,
     )
+    .with_execution(node_count=2, ranks_per_node=8)
     .with_datasets(["halo_properties", "dm_particles", "galaxies"])
     .select(
         halo_properties={
@@ -222,6 +223,19 @@ resp = (
 )
 status = resp.wait()
 ds = resp.get_results()
+```
+
+The serialized remote request now uses protocol version `3.0`. Execution
+overrides are sparse, so the example above emits:
+
+```python
+{
+    "protocol_version": "3.0",
+    "execution": {
+        "node_count": 2,
+        "ranks_per_node": 8,
+    },
+}
 ```
 
 Blocking calls such as `fetch()`, `wait()`, and `get_results()` now print

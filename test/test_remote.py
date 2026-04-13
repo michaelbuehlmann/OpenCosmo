@@ -108,7 +108,8 @@ def test_remote_query_serializes_execution_overrides():
         steps=205,
     ).with_execution(
         allocation="my-project",
-        mpi_ranks=8,
+        node_count=2,
+        ranks_per_node=8,
         priority="debug",
         walltime="00:15:00",
         reservation="nightly-window",
@@ -119,17 +120,35 @@ def test_remote_query_serializes_execution_overrides():
 
     assert request.execution is not None
     assert request.execution.allocation == "my-project"
-    assert request.execution.mpi_ranks == 8
+    assert request.execution.node_count == 2
+    assert request.execution.ranks_per_node == 8
     assert request.execution.priority == "debug"
     assert request.execution.walltime == "00:15:00"
     assert request.execution.reservation == "nightly-window"
     assert payload["execution"] == {
         "allocation": "my-project",
-        "mpi_ranks": 8,
+        "node_count": 2,
+        "ranks_per_node": 8,
         "priority": "debug",
         "walltime": "00:15:00",
         "reservation": "nightly-window",
     }
+
+
+def test_remote_query_serializes_node_count_only_override():
+    query = oc.remote.open(
+        "Frontier-E",
+        ["halo_properties"],
+        product="snapshot",
+        steps=205,
+    ).with_execution(node_count=2)
+
+    request = RemoteQueryRequest.model_validate(query.serialize())
+
+    assert request.execution is not None
+    assert request.execution.node_count == 2
+    assert request.execution.ranks_per_node is None
+    assert query.serialize()["execution"] == {"node_count": 2}
 
 
 def test_remote_query_with_execution_returns_new_query():
@@ -208,7 +227,7 @@ def test_remote_query_request_rejects_structured_source_without_kind():
     with pytest.raises(ValidationError, match="Unable to extract tag using discriminator"):
         RemoteQueryRequest.model_validate(
             {
-                "protocol_version": "2.0",
+                "protocol_version": "3.0",
                 "client_version": "test-client",
                 "source": {
                     "remote_dataset": "Frontier-E",
@@ -225,7 +244,7 @@ def test_remote_query_request_rejects_structured_source_without_kind():
 def test_remote_query_request_accepts_explicit_structured_source_kind():
     request = RemoteQueryRequest.model_validate(
         {
-            "protocol_version": "2.0",
+            "protocol_version": "3.0",
             "client_version": "test-client",
             "source": {
                 "kind": "structured_catalog",
@@ -247,7 +266,7 @@ def test_remote_query_request_accepts_explicit_structured_source_kind():
 def test_remote_query_request_accepts_file_collection_source_kind():
     request = RemoteQueryRequest.model_validate(
         {
-            "protocol_version": "2.0",
+            "protocol_version": "3.0",
             "client_version": "test-client",
             "source": {
                 "kind": "file_collection",
@@ -267,7 +286,7 @@ def test_remote_query_request_accepts_file_collection_source_kind():
 def test_remote_query_request_accepts_execution_block():
     request = RemoteQueryRequest.model_validate(
         {
-            "protocol_version": "2.0",
+            "protocol_version": "3.0",
             "client_version": "test-client",
             "source": {
                 "kind": "structured_catalog",
@@ -279,7 +298,8 @@ def test_remote_query_request_accepts_execution_block():
             "operations": [],
             "execution": {
                 "allocation": "my-project",
-                "mpi_ranks": 16,
+                "node_count": 2,
+                "ranks_per_node": 16,
                 "priority": "normal",
                 "walltime": "01:30:00",
                 "reservation": "window-7",
@@ -289,17 +309,41 @@ def test_remote_query_request_accepts_execution_block():
 
     assert request.execution is not None
     assert request.execution.allocation == "my-project"
-    assert request.execution.mpi_ranks == 16
+    assert request.execution.node_count == 2
+    assert request.execution.ranks_per_node == 16
     assert request.execution.priority == "normal"
     assert request.execution.walltime == "01:30:00"
     assert request.execution.reservation == "window-7"
+
+
+def test_remote_query_request_rejects_legacy_execution_mpi_ranks():
+    with pytest.raises(ValidationError, match="mpi_ranks"):
+        RemoteQueryRequest.model_validate(
+            {
+                "protocol_version": "3.0",
+                "client_version": "test-client",
+                "source": {
+                    "kind": "structured_catalog",
+                    "remote_dataset": "Frontier-E",
+                    "product": "snapshot",
+                    "steps": [205],
+                    "catalogs": ["halo_properties"],
+                },
+                "operations": [],
+                "execution": {"mpi_ranks": 16},
+            }
+        )
 
 
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
         ({"allocation": "   "}, "value must not be blank"),
-        ({"mpi_ranks": 0}, "mpi_ranks must be a positive integer"),
+        ({"node_count": 0}, "node_count must be a positive integer"),
+        (
+            {"ranks_per_node": 0},
+            "ranks_per_node must be a positive integer",
+        ),
         ({"reservation": "   "}, "value must not be blank"),
         ({"walltime": "15:00"}, "walltime must match HH:MM:SS"),
         (

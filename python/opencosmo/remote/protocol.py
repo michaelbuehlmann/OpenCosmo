@@ -6,7 +6,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-PROTOCOL_VERSION: Literal["2.0"] = "2.0"
+PROTOCOL_VERSION: Literal["3.0"] = "3.0"
 ComparisonOperator: TypeAlias = Literal["eq", "ne", "gt", "ge", "lt", "le", "isin"]
 CompoundOperator: TypeAlias = Literal["and", "or"]
 TakePosition: TypeAlias = Literal["start", "end", "random"]
@@ -297,10 +297,11 @@ _WALLTIME_PATTERN = re.compile(r"^\d{2}:\d{2}:\d{2}$")
 
 
 class RemoteExecutionOptions(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     allocation: str | None = None
-    mpi_ranks: int | None = None
+    node_count: int | None = None
+    ranks_per_node: int | None = None
     priority: Literal["normal", "debug"] | None = None
     walltime: str | None = None
     reservation: str | None = None
@@ -324,20 +325,21 @@ class RemoteExecutionOptions(BaseModel):
             raise ValueError("walltime must match HH:MM:SS")
         return value
 
-    @field_validator("mpi_ranks")
+    @field_validator("node_count", "ranks_per_node")
     @classmethod
-    def validate_mpi_ranks(cls, value: int | None):
+    def validate_positive_int(cls, value: int | None, info):
         if value is None:
             return value
         if value < 1:
-            raise ValueError("mpi_ranks must be a positive integer")
+            raise ValueError(f"{info.field_name} must be a positive integer")
         return value
 
     @model_validator(mode="after")
     def validate_has_override(self):
         if (
             self.allocation is None
-            and self.mpi_ranks is None
+            and self.node_count is None
+            and self.ranks_per_node is None
             and self.priority is None
             and self.walltime is None
             and self.reservation is None
@@ -349,7 +351,7 @@ class RemoteExecutionOptions(BaseModel):
 class RemoteQueryRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    protocol_version: Literal["2.0"] = PROTOCOL_VERSION
+    protocol_version: Literal["3.0"] = PROTOCOL_VERSION
     client_version: str
     source: RemoteQuerySource
     operations: tuple[RemoteOperation, ...] = ()
