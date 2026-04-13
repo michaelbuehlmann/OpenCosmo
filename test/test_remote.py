@@ -1053,13 +1053,8 @@ def test_remote_auth_interactive_login_stores_refreshable_auth(
     class FakeGlobusSDK:
         NativeAppAuthClient = FakeNativeAppAuthClient
 
-    browser_urls = []
     monkeypatch.setattr("opencosmo.remote.auth.request.urlopen", urlopen)
     monkeypatch.setattr("opencosmo.remote.auth._get_globus_sdk", lambda: FakeGlobusSDK)
-    monkeypatch.setattr(
-        "opencosmo.remote.auth.webbrowser.open",
-        lambda url: browser_urls.append(url) or False,
-    )
     monkeypatch.setattr("builtins.input", lambda prompt: "auth-code")
 
     status = oc.remote.auth.login()
@@ -1073,7 +1068,6 @@ def test_remote_auth_interactive_login_stores_refreshable_auth(
     assert status.expires_at is not None
     assert oc.remote.get_profile().token is None
     assert oc.remote.auth.status().token_source == "stored"
-    assert browser_urls == ["https://auth.globus.org/authorize?scope=scope://remote"]
     assert flow_started == [
         {
             "requested_scopes": (
@@ -1155,7 +1149,7 @@ def test_remote_auth_interactive_login_omits_prompt_without_session_policies(
 
     monkeypatch.setattr("opencosmo.remote.auth._get_globus_sdk", lambda: FakeGlobusSDK)
 
-    oc.remote.auth.login(open_browser=False, auth_code="auth-code")
+    oc.remote.auth.login(auth_code="auth-code")
 
     assert authorize_url_params == [{}]
 
@@ -1234,7 +1228,7 @@ def test_remote_auth_login_rejects_blank_required_scope(monkeypatch, tmp_path):
     )
 
     with pytest.raises(RemoteError, match="missing required_scope"):
-        oc.remote.auth.login(open_browser=False, auth_code="unused")
+        oc.remote.auth.login(auth_code="unused")
 
 
 def test_remote_auth_login_rejects_non_globus_provider(monkeypatch, tmp_path):
@@ -1254,7 +1248,7 @@ def test_remote_auth_login_rejects_non_globus_provider(monkeypatch, tmp_path):
     )
 
     with pytest.raises(RemoteError, match="invalid auth_provider"):
-        oc.remote.auth.login(open_browser=False, auth_code="unused")
+        oc.remote.auth.login(auth_code="unused")
 
 
 def test_remote_auth_status_without_profile_uses_default_remote(
@@ -2447,13 +2441,46 @@ def test_remote_cli_login_with_auth_code(monkeypatch, tmp_path):
 
     result = runner.invoke(
         cli,
-        ["remote", "login", "--no-browser", "--auth-code", "auth-code"],
+        ["remote", "login", "--auth-code", "auth-code"],
     )
 
     assert result.exit_code == 0
     payload = _cli_json_output(result.output)
     assert payload["token_source"] == "stored"
     assert payload["required_scope"] == "scope://remote"
+
+
+def test_remote_cli_login_defaults_to_no_browser(monkeypatch, tmp_path):
+    runner = CliRunner()
+    monkeypatch.setattr(
+        "opencosmo.remote.cli._remote_profile",
+        lambda base_url: oc.remote.RemoteProfile(
+            base_url=base_url or "https://example.test",
+            auth_storage_path=tmp_path / "remote-auth.json",
+        ),
+    )
+
+    observed = {}
+
+    def fake_login(*, token=None, auth_code=None):
+        observed["token"] = token
+        observed["auth_code"] = auth_code
+        return oc.remote.auth.AuthStatus(
+            authenticated=True,
+            message="Stored remote login completed.",
+            base_url="https://example.test",
+            token_source="stored",
+        )
+
+    monkeypatch.setattr("opencosmo.remote.auth.login", fake_login)
+
+    result = runner.invoke(cli, ["remote", "login", "--auth-code", "auth-code"])
+
+    assert result.exit_code == 0
+    assert observed == {
+        "token": None,
+        "auth_code": "auth-code",
+    }
 
 
 def test_remote_cli_logout(monkeypatch, tmp_path):

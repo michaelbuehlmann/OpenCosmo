@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import webbrowser
 from dataclasses import replace
 from typing import TYPE_CHECKING, Literal
 from urllib import request
@@ -52,7 +51,6 @@ def login(
     token: str | None = None,
     *,
     auth_code: str | None = None,
-    open_browser: bool = True,
 ) -> AuthStatus:
     """
     Configure a bearer token for the active remote profile.
@@ -82,11 +80,6 @@ def login(
             "Open this URL in your browser to authorize OpenCosmo Remote:\n"
             f"{authorize_url}"
         )
-        if open_browser:
-            try:
-                webbrowser.open(authorize_url)
-            except Exception:
-                pass
         if auth_code is None:
             auth_code = input("Enter the Globus authorization code: ").strip()
         if not auth_code:

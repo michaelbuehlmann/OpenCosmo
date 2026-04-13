@@ -19,12 +19,10 @@ def remote():
 @remote.command(name="login")
 @click.option("--token", type=str, required=False)
 @click.option("--auth-code", type=str, required=False)
-@click.option("--browser/--no-browser", "open_browser", default=True)
 @click.option("--base-url", type=str, required=False)
 def remote_login(
     token: str | None,
     auth_code: str | None,
-    open_browser: bool,
     base_url: str | None,
 ):
     if token is not None and auth_code is not None:
@@ -35,7 +33,6 @@ def remote_login(
         callback=lambda: remote_module.auth.login(
             token=token,
             auth_code=auth_code,
-            open_browser=open_browser,
         ),
     )
     click.echo(status.model_dump_json(indent=2))
