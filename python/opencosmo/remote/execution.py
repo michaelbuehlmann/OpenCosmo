@@ -3,7 +3,7 @@ from __future__ import annotations
 import operator as op
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Iterable
+from typing import TYPE_CHECKING, Callable, Iterable, cast
 
 import astropy.units as u
 
@@ -181,7 +181,7 @@ def _derived_expr_to_python(expr: ColumnRefExpr | ScalarExpr | BinaryExpr | Unar
         case ScalarExpr():
             return expr.value
         case BinaryExpr():
-            operation = {
+            binary_operation = {
                 "add": op.add,
                 "sub": op.sub,
                 "mul": op.mul,
@@ -191,15 +191,22 @@ def _derived_expr_to_python(expr: ColumnRefExpr | ScalarExpr | BinaryExpr | Unar
             return DerivedColumn(
                 _derived_expr_to_python(expr.lhs),
                 _derived_expr_to_python(expr.rhs),
-                operation,
+                binary_operation,
             )
         case UnaryExpr():
-            operation = {
-                "sqrt": _sqrt,
-                "log10": partial(_log10, unit_container=u.DexUnit),
-                "exp10": partial(_exp10, expected_unit_container=u.DexUnit),
-            }[expr.operator]
-            return DerivedColumn(_derived_expr_to_python(expr.operand), None, operation)
+            unary_operation = cast(
+                "Callable[..., object]",
+                {
+                    "sqrt": _sqrt,
+                    "log10": partial(_log10, unit_container=u.DexUnit),
+                    "exp10": partial(_exp10, expected_unit_container=u.DexUnit),
+                }[expr.operator],
+            )
+            return DerivedColumn(
+                _derived_expr_to_python(expr.operand),
+                None,
+                unary_operation,
+            )
     raise TypeError(f"Unsupported derived expression {type(expr)}")
 
 

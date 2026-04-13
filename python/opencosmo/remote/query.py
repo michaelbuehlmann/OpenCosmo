@@ -458,13 +458,16 @@ def _derived_expr_from_python(expr: Any, *, path: str) -> DerivedExpr:
 
 def _serialize_derived_column(expr: DerivedColumn, *, path: str) -> DerivedExpr:
     operation = expr.operation
-    binary_operator = {
-        op.add: "add",
-        op.sub: "sub",
-        op.mul: "mul",
-        op.truediv: "truediv",
-        op.pow: "pow",
-    }.get(operation)
+    binary_operator = cast(
+        "Literal['add', 'sub', 'mul', 'truediv', 'pow'] | None",
+        {
+            op.add: "add",
+            op.sub: "sub",
+            op.mul: "mul",
+            op.truediv: "truediv",
+            op.pow: "pow",
+        }.get(operation),
+    )
     if binary_operator is not None:
         return BinaryExpr(
             operator=binary_operator,

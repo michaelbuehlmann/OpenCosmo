@@ -77,8 +77,24 @@ python-source = "python"
 [tool.uv]
 cache-keys = [{file = "pyproject.toml"}, {file = "Cargo.toml"}, {file = "**/*.rs"}]
 
+[tool.mypy]
+files = ["python", "test"]
+
 [[tool.mypy.overrides]]
-module = ["h5py", "astropy.*", "healpy", "healsparse", "numba"]
+module = [
+  "astropy.*",
+  "h5py",
+  "healpy",
+  "healsparse",
+  "matplotlib.figure",
+  "mpi4py",
+  "numba",
+  "pandas",
+  "polars",
+  "pyarrow",
+  "pytest_mpi.parallel_assert",
+  "yt.*",
+]
 ignore_missing_imports = true
 
 

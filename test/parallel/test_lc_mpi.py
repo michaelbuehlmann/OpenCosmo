@@ -45,7 +45,7 @@ def per_test_dir(
         yield path_to_return
     finally:
         # Close out storage pressure immediately after each test
-        if IN_GITHUB_ACTIONS and rank == 0:
+        if IN_GITHUB_ACTIONS and rank == 0 and path is not None:
             shutil.rmtree(path, ignore_errors=True)
 
 
