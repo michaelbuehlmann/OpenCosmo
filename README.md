@@ -148,7 +148,9 @@ profile points at the production service, so the normal auth flow is:
 
 ```bash
 opencosmo remote login
+opencosmo remote reauth
 opencosmo remote status
+opencosmo remote cleanup
 ```
 
 If you need a non-default deployment, override the profile in Python:
@@ -163,7 +165,10 @@ status = oc.remote.auth.login()
 
 The login flow stores refreshable auth state locally under
 `~/.config/opencosmo/remote-auth.json` and automatically refreshes access tokens
-for future remote API calls.
+for future remote API calls. `opencosmo remote reauth` clears stored auth for
+the active remote profile and starts a fresh login, while
+`opencosmo remote cleanup` removes cached remote query results under the remote
+cache directory.
 
 Remote queries still execute only when you call an explicit terminal method:
 

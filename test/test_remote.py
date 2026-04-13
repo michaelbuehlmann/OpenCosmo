@@ -2513,6 +2513,222 @@ def test_remote_cli_logout(monkeypatch, tmp_path):
     assert not storage_path.exists()
 
 
+def test_remote_cli_reauth_with_token(monkeypatch, tmp_path):
+    runner = CliRunner()
+    events: list[tuple[str, str | None, str | None]] = []
+    monkeypatch.setattr(
+        "opencosmo.remote.cli._remote_profile",
+        lambda base_url: oc.remote.RemoteProfile(
+            base_url=base_url or "https://example.test",
+            auth_storage_path=tmp_path / "remote-auth.json",
+        ),
+    )
+
+    def fake_logout():
+        events.append(("logout", None, None))
+        return oc.remote.auth.AuthStatus(
+            authenticated=False,
+            message="Logged out.",
+            base_url="https://example.test",
+            token_source="none",
+        )
+
+    def fake_login(*, token=None, auth_code=None):
+        events.append(("login", token, auth_code))
+        return oc.remote.auth.AuthStatus(
+            authenticated=True,
+            message="Stored remote login completed.",
+            base_url="https://example.test",
+            token_source="memory",
+        )
+
+    monkeypatch.setattr("opencosmo.remote.auth.logout", fake_logout)
+    monkeypatch.setattr("opencosmo.remote.auth.login", fake_login)
+
+    result = runner.invoke(cli, ["remote", "reauth", "--token", "secret"])
+
+    assert result.exit_code == 0
+    assert events == [
+        ("logout", None, None),
+        ("login", "secret", None),
+    ]
+    payload = _cli_json_output(result.output)
+    assert payload["authenticated"] is True
+    assert payload["token_source"] == "memory"
+
+
+def test_remote_cli_reauth_with_auth_code(monkeypatch, tmp_path):
+    runner = CliRunner()
+    events: list[tuple[str, str | None, str | None]] = []
+    monkeypatch.setattr(
+        "opencosmo.remote.cli._remote_profile",
+        lambda base_url: oc.remote.RemoteProfile(
+            base_url=base_url or "https://example.test",
+            auth_storage_path=tmp_path / "remote-auth.json",
+        ),
+    )
+
+    def fake_logout():
+        events.append(("logout", None, None))
+        return oc.remote.auth.AuthStatus(
+            authenticated=False,
+            message="Logged out.",
+            base_url="https://example.test",
+            token_source="none",
+        )
+
+    def fake_login(*, token=None, auth_code=None):
+        events.append(("login", token, auth_code))
+        return oc.remote.auth.AuthStatus(
+            authenticated=True,
+            message="Stored remote login completed.",
+            base_url="https://example.test",
+            token_source="stored",
+        )
+
+    monkeypatch.setattr("opencosmo.remote.auth.logout", fake_logout)
+    monkeypatch.setattr("opencosmo.remote.auth.login", fake_login)
+
+    result = runner.invoke(cli, ["remote", "reauth", "--auth-code", "auth-code"])
+
+    assert result.exit_code == 0
+    assert events == [
+        ("logout", None, None),
+        ("login", None, "auth-code"),
+    ]
+    payload = _cli_json_output(result.output)
+    assert payload["authenticated"] is True
+    assert payload["token_source"] == "stored"
+
+
+def test_remote_cli_reauth_clears_existing_store_before_login(monkeypatch, tmp_path):
+    storage_path = tmp_path / "remote-auth.json"
+    put_entry(
+        storage_path,
+        StoredRemoteAuth(
+            base_url="https://example.test",
+            client_id=DEFAULT_AUTH_CLIENT_ID,
+            required_scope="scope://remote",
+            access_token="stored-token",
+            refresh_token="refresh-token",
+            expires_at=1_800_000_000,
+        ),
+    )
+    runner = CliRunner()
+    monkeypatch.setattr(
+        "opencosmo.remote.cli._remote_profile",
+        lambda base_url: oc.remote.RemoteProfile(
+            base_url=base_url or "https://example.test",
+            auth_storage_path=storage_path,
+        ),
+    )
+
+    def fake_login(*, token=None, auth_code=None):
+        assert token is None
+        assert auth_code == "auth-code"
+        assert not storage_path.exists()
+        return oc.remote.auth.AuthStatus(
+            authenticated=True,
+            message="Stored remote login completed.",
+            base_url="https://example.test",
+            token_source="stored",
+        )
+
+    monkeypatch.setattr("opencosmo.remote.auth.login", fake_login)
+
+    result = runner.invoke(
+        cli,
+        ["remote", "reauth", "--auth-code", "auth-code"],
+    )
+
+    assert result.exit_code == 0
+    payload = _cli_json_output(result.output)
+    assert payload["authenticated"] is True
+
+
+def test_remote_cli_cleanup_removes_result_cache_dir(monkeypatch, tmp_path):
+    result_cache_dir = tmp_path / "remote-cache"
+    output_path = result_cache_dir / "job-123" / "result.hdf5"
+    output_path.parent.mkdir(parents=True)
+    output_path.write_bytes(b"result")
+
+    storage_path = tmp_path / "remote-auth.json"
+    put_entry(
+        storage_path,
+        StoredRemoteAuth(
+            base_url="https://example.test",
+            client_id=DEFAULT_AUTH_CLIENT_ID,
+            required_scope="scope://remote",
+            access_token="stored-token",
+            refresh_token="refresh-token",
+            expires_at=1_800_000_000,
+        ),
+    )
+
+    runner = CliRunner()
+    monkeypatch.setattr(
+        "opencosmo.remote.cli.remote_module.get_profile",
+        lambda: oc.remote.RemoteProfile(
+            base_url="https://example.test",
+            result_cache_dir=result_cache_dir,
+            auth_storage_path=storage_path,
+        ),
+    )
+
+    result = runner.invoke(cli, ["remote", "cleanup"])
+
+    assert result.exit_code == 0
+    payload = _cli_json_output(result.output)
+    assert payload["cache_dir"] == str(result_cache_dir)
+    assert payload["removed"] is True
+    assert payload["message"] == "Remote result cache directory removed."
+    assert not result_cache_dir.exists()
+    assert storage_path.exists()
+
+
+def test_remote_cli_cleanup_noop_when_cache_missing(monkeypatch, tmp_path):
+    result_cache_dir = tmp_path / "remote-cache"
+    runner = CliRunner()
+    monkeypatch.setattr(
+        "opencosmo.remote.cli.remote_module.get_profile",
+        lambda: oc.remote.RemoteProfile(
+            base_url="https://example.test",
+            result_cache_dir=result_cache_dir,
+        ),
+    )
+
+    result = runner.invoke(cli, ["remote", "cleanup"])
+
+    assert result.exit_code == 0
+    payload = _cli_json_output(result.output)
+    assert payload["cache_dir"] == str(result_cache_dir)
+    assert payload["removed"] is False
+    assert payload["message"] == "Remote result cache directory is already clean."
+
+
+def test_remote_cli_cleanup_handles_non_directory_path(monkeypatch, tmp_path):
+    result_cache_path = tmp_path / "remote-cache"
+    result_cache_path.write_text("cache file", encoding="utf-8")
+
+    runner = CliRunner()
+    monkeypatch.setattr(
+        "opencosmo.remote.cli.remote_module.get_profile",
+        lambda: oc.remote.RemoteProfile(
+            base_url="https://example.test",
+            result_cache_dir=result_cache_path,
+        ),
+    )
+
+    result = runner.invoke(cli, ["remote", "cleanup"])
+
+    assert result.exit_code == 0
+    payload = _cli_json_output(result.output)
+    assert payload["cache_dir"] == str(result_cache_path)
+    assert payload["removed"] is True
+    assert payload["message"] == "Remote result cache directory removed."
+    assert not result_cache_path.exists()
+
+
 def test_remote_cli_base_url_override(monkeypatch, tmp_path):
     runner = CliRunner()
     monkeypatch.setattr(
@@ -2539,6 +2755,18 @@ def test_remote_cli_rejects_token_and_auth_code():
     result = runner.invoke(
         cli,
         ["remote", "login", "--token", "secret", "--auth-code", "auth-code"],
+    )
+
+    assert result.exit_code != 0
+    assert "--token and --auth-code are mutually exclusive." in result.output
+
+
+def test_remote_cli_reauth_rejects_token_and_auth_code():
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        ["remote", "reauth", "--token", "secret", "--auth-code", "auth-code"],
     )
 
     assert result.exit_code != 0

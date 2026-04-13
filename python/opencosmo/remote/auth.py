@@ -180,6 +180,18 @@ def logout() -> AuthStatus:
     )
 
 
+def reauth(
+    token: str | None = None,
+    *,
+    auth_code: str | None = None,
+) -> AuthStatus:
+    """
+    Force a fresh authentication cycle for the active remote profile.
+    """
+    logout()
+    return login(token=token, auth_code=auth_code)
+
+
 def _auth_metadata(profile: RemoteProfile) -> _RemoteAuthMetadata:
     url = f"{normalize_base_url(profile.base_url)}{_AUTH_METADATA_PATH}"
     req = request.Request(url, headers={"Accept": "application/json"})
