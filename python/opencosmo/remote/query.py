@@ -57,7 +57,6 @@ if TYPE_CHECKING:
     from opencosmo.remote.protocol import (
         DerivedExpr,
         Predicate,
-        RemoteExecutionOptions,
         RemoteOperation,
         RemoteQueryProduct,
         RemoteQuerySource,

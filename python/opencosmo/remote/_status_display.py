@@ -34,7 +34,9 @@ class NotebookStatusSink:
         renderer: Callable[[str], Any] | None = None,
     ):
         self.__handle = handle
-        self.__renderer = _render_notebook_text if renderer is None else renderer
+        self.__renderer = (
+            _get_notebook_text_renderer() if renderer is None else renderer
+        )
         self.__lines: list[str] = []
         self.__shown = False
 
