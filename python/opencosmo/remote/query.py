@@ -127,12 +127,14 @@ class RemoteQuery:
         self,
         *,
         allocation: str | None = None,
+        mpi_ranks: int | None = None,
         priority: Literal["normal", "debug"] | None = None,
         walltime: str | None = None,
         reservation: str | None = None,
     ) -> RemoteQuery:
         execution = RemoteExecutionOptions(
             allocation=allocation,
+            mpi_ranks=mpi_ranks,
             priority=priority,
             walltime=walltime,
             reservation=reservation,

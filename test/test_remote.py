@@ -108,6 +108,7 @@ def test_remote_query_serializes_execution_overrides():
         steps=205,
     ).with_execution(
         allocation="my-project",
+        mpi_ranks=8,
         priority="debug",
         walltime="00:15:00",
         reservation="nightly-window",
@@ -118,11 +119,13 @@ def test_remote_query_serializes_execution_overrides():
 
     assert request.execution is not None
     assert request.execution.allocation == "my-project"
+    assert request.execution.mpi_ranks == 8
     assert request.execution.priority == "debug"
     assert request.execution.walltime == "00:15:00"
     assert request.execution.reservation == "nightly-window"
     assert payload["execution"] == {
         "allocation": "my-project",
+        "mpi_ranks": 8,
         "priority": "debug",
         "walltime": "00:15:00",
         "reservation": "nightly-window",
@@ -201,28 +204,22 @@ def test_remote_query_get_method_was_removed():
     assert not hasattr(query, "get")
 
 
-def test_remote_query_request_accepts_legacy_structured_source_without_kind():
-    request = RemoteQueryRequest.model_validate(
-        {
-            "protocol_version": "2.0",
-            "client_version": "test-client",
-            "source": {
-                "remote_dataset": "Frontier-E",
-                "product": "snapshot",
-                "steps": [205],
-                "catalogs": ["halo_properties"],
-                "open_kwargs": {"synth_cores": True},
-            },
-            "operations": [],
-        }
-    )
-
-    assert isinstance(request.source, StructuredCatalogSource)
-    assert request.source.kind == "structured_catalog"
-    assert request.source.product == "snapshot"
-    assert request.source.steps == (205,)
-    assert request.source.catalogs == ("halo_properties",)
-    assert request.source.open_kwargs == {"synth_cores": True}
+def test_remote_query_request_rejects_structured_source_without_kind():
+    with pytest.raises(ValidationError, match="Unable to extract tag using discriminator"):
+        RemoteQueryRequest.model_validate(
+            {
+                "protocol_version": "2.0",
+                "client_version": "test-client",
+                "source": {
+                    "remote_dataset": "Frontier-E",
+                    "product": "snapshot",
+                    "steps": [205],
+                    "catalogs": ["halo_properties"],
+                    "open_kwargs": {"synth_cores": True},
+                },
+                "operations": [],
+            }
+        )
 
 
 def test_remote_query_request_accepts_explicit_structured_source_kind():
@@ -282,6 +279,7 @@ def test_remote_query_request_accepts_execution_block():
             "operations": [],
             "execution": {
                 "allocation": "my-project",
+                "mpi_ranks": 16,
                 "priority": "normal",
                 "walltime": "01:30:00",
                 "reservation": "window-7",
@@ -291,6 +289,7 @@ def test_remote_query_request_accepts_execution_block():
 
     assert request.execution is not None
     assert request.execution.allocation == "my-project"
+    assert request.execution.mpi_ranks == 16
     assert request.execution.priority == "normal"
     assert request.execution.walltime == "01:30:00"
     assert request.execution.reservation == "window-7"
@@ -300,6 +299,7 @@ def test_remote_query_request_accepts_execution_block():
     ("kwargs", "message"),
     [
         ({"allocation": "   "}, "value must not be blank"),
+        ({"mpi_ranks": 0}, "mpi_ranks must be a positive integer"),
         ({"reservation": "   "}, "value must not be blank"),
         ({"walltime": "15:00"}, "walltime must match HH:MM:SS"),
         (

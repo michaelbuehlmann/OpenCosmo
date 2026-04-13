@@ -300,6 +300,7 @@ class RemoteExecutionOptions(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     allocation: str | None = None
+    mpi_ranks: int | None = None
     priority: Literal["normal", "debug"] | None = None
     walltime: str | None = None
     reservation: str | None = None
@@ -323,10 +324,20 @@ class RemoteExecutionOptions(BaseModel):
             raise ValueError("walltime must match HH:MM:SS")
         return value
 
+    @field_validator("mpi_ranks")
+    @classmethod
+    def validate_mpi_ranks(cls, value: int | None):
+        if value is None:
+            return value
+        if value < 1:
+            raise ValueError("mpi_ranks must be a positive integer")
+        return value
+
     @model_validator(mode="after")
     def validate_has_override(self):
         if (
             self.allocation is None
+            and self.mpi_ranks is None
             and self.priority is None
             and self.walltime is None
             and self.reservation is None
@@ -343,16 +354,6 @@ class RemoteQueryRequest(BaseModel):
     source: RemoteQuerySource
     operations: tuple[RemoteOperation, ...] = ()
     execution: RemoteExecutionOptions | None = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_legacy_source_kind(cls, data):
-        if not isinstance(data, dict):
-            return data
-        source = data.get("source")
-        if not isinstance(source, dict) or "kind" in source:
-            return data
-        return data | {"source": {"kind": "structured_catalog"} | source}
 
 
 class RemoteQueryAccepted(BaseModel):
