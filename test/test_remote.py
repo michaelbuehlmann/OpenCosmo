@@ -1705,6 +1705,94 @@ def test_remote_query_failed_status_line_uses_error_detail_when_message_missing(
     ]
 
 
+def test_remote_query_fetch_hydrates_immediate_failed_submit_status(monkeypatch):
+    def urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/queries") and req.get_method() == "POST":
+            return _Response(json.dumps({"job_id": "job-1", "status": "failed"}).encode())
+        return _Response(
+            RemoteQueryStatus(
+                job_id="job-1",
+                status="failed",
+                message="Remote query submission failed.",
+                failure_stage="submission",
+                error_type="FacilityUnauthorizedError",
+                error_detail="Keycloak ID token not valid or expired. Try to re-authenticate.",
+            )
+            .model_dump_json()
+            .encode()
+        )
+
+    monkeypatch.setattr("opencosmo.remote.client.request.urlopen", urlopen)
+
+    with pytest.raises(RemoteJobFailed) as exc_info:
+        oc.remote.open(
+            "Frontier-E",
+            ["halo_properties"],
+            product="snapshot",
+            steps=205,
+        ).fetch(profile=oc.remote.RemoteProfile(base_url="https://example.test"))
+
+    assert str(exc_info.value) == "\n".join(
+        [
+            "Remote query job-1 failed.",
+            "Summary: Remote query submission failed.",
+            "Stage: submission",
+            "Error type: FacilityUnauthorizedError",
+            "Detail:",
+            "  Keycloak ID token not valid or expired. Try to re-authenticate.",
+        ]
+    )
+
+
+def test_remote_query_fetch_hydrates_immediate_succeeded_submit_status(
+    monkeypatch, tmp_path
+):
+    calls = []
+
+    def urlopen(req, timeout=None, context=None):
+        calls.append(req.full_url)
+        if req.full_url.endswith("/queries") and req.get_method() == "POST":
+            return _Response(
+                json.dumps({"job_id": "job-1", "status": "succeeded"}).encode()
+            )
+        if req.full_url.endswith("/queries/job-1"):
+            return _Response(
+                RemoteQueryStatus(
+                    job_id="job-1",
+                    status="succeeded",
+                    result_url="https://example.test/results/job-1.hdf5",
+                )
+                .model_dump_json()
+                .encode()
+            )
+        return _Response(b"fake-hdf5")
+
+    def fake_open(path):
+        return Path(path).read_bytes()
+
+    monkeypatch.setattr("opencosmo.remote.client.request.urlopen", urlopen)
+    monkeypatch.setattr(oc, "open", fake_open)
+
+    result = oc.remote.open(
+        "Frontier-E",
+        ["halo_properties"],
+        product="snapshot",
+        steps=205,
+    ).fetch(
+        profile=oc.remote.RemoteProfile(
+            base_url="https://example.test",
+            result_cache_dir=tmp_path,
+        )
+    )
+
+    assert result == b"fake-hdf5"
+    assert calls == [
+        "https://example.test/queries",
+        "https://example.test/queries/job-1",
+        "https://example.test/results/job-1.hdf5",
+    ]
+
+
 def test_remote_query_status_accepts_optional_failure_metadata():
     status = RemoteQueryStatus.model_validate(
         {

@@ -344,6 +344,8 @@ class RemoteQueryResponse:
         self, timeout_s: float | None = None, *, show_status: bool = True
     ) -> RemoteQueryStatus:
         if self.__status is not None and self.__status.status in ("succeeded", "failed"):
+            if _terminal_status_needs_refresh(self.__status):
+                self.__status = self.__client.get_status(self.job_id)
             return self.__status
 
         if not show_status:
@@ -373,9 +375,30 @@ class RemoteQueryResponse:
         import opencosmo as oc
 
         status = self.__status
-        if status is None or status.status != "succeeded":
+        if (
+            status is None
+            or status.status != "succeeded"
+            or _terminal_status_needs_refresh(status)
+        ):
             status = self.wait(show_status=show_status)
         if status.status == "failed":
             raise RemoteJobFailed.from_status(status)
         result_path = self.__client.download_result(status)
         return oc.open(result_path)
+
+
+def _terminal_status_needs_refresh(status: RemoteQueryStatus) -> bool:
+    if status.status == "failed":
+        return all(
+            value is None
+            for value in (
+                status.message,
+                status.failure_stage,
+                status.error_type,
+                status.error_detail,
+                status.stderr_excerpt,
+                status.stdout_excerpt,
+            )
+        )
+
+    return status.status == "succeeded" and status.result_url is None
