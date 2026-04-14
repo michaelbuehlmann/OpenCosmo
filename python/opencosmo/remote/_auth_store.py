@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from opencosmo.remote.client import RemoteProfile
 
-DEFAULT_AUTH_CLIENT_ID = "132a3ac6-128f-4661-a20b-411a9a376671"
+# DEFAULT_AUTH_CLIENT_ID = "132a3ac6-128f-4661-a20b-411a9a376671"
+DEFAULT_AUTH_CLIENT_ID = "8b84fc2d-49e9-49ea-b54d-b3a29a70cf31"  # ALCF client ID
 DEFAULT_AUTH_STORAGE_PATH = Path.home() / ".config" / "opencosmo" / "remote-auth.json"
 _STORE_VERSION = 1
 _REFRESH_SKEW_SECONDS = 60
