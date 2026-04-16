@@ -23,7 +23,7 @@ from opencosmo.remote.protocol import (
 if TYPE_CHECKING:
     from opencosmo.remote.protocol import RemoteQueryRequest
 
-DEFAULT_REMOTE_BASE_URL = "https://opencosmoremote-production.up.railway.app"
+DEFAULT_REMOTE_BASE_URL = "https://remote.opencosmo.science"
 
 
 class RemoteError(RuntimeError):
