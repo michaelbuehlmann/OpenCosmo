@@ -363,6 +363,11 @@ class RemoteQueryAccepted(BaseModel):
 
     job_id: str
     status: Literal["queued", "running", "failed", "succeeded"]
+    facility_id: str | None = None
+    facility_display_name: str | None = None
+    resource_id: str | None = None
+    resource_display_name: str | None = None
+    facility_job_id: str | None = None
 
 
 class RemoteQueryStatus(BaseModel):
@@ -370,6 +375,11 @@ class RemoteQueryStatus(BaseModel):
 
     job_id: str
     status: Literal["queued", "running", "failed", "succeeded"]
+    facility_id: str | None = None
+    facility_display_name: str | None = None
+    resource_id: str | None = None
+    resource_display_name: str | None = None
+    facility_job_id: str | None = None
     submitted_at: str | None = None
     updated_at: str | None = None
     message: str | None = None

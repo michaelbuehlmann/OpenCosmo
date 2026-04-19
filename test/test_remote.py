@@ -33,6 +33,7 @@ from opencosmo.remote.client import (
 from opencosmo.remote.execution import execute_remote_query, replay_operation
 from opencosmo.remote.protocol import (
     FileCollectionSource,
+    RemoteQueryAccepted,
     RemoteQueryRequest,
     RemoteQueryStatus,
     StructuredCatalogSource,
@@ -261,6 +262,36 @@ def test_remote_query_request_accepts_explicit_structured_source_kind():
     assert request.source.kind == "structured_catalog"
     assert request.source.steps == (205,)
     assert request.source.catalogs == ("halo_properties",)
+
+
+def test_remote_query_protocol_models_accept_public_routing_metadata():
+    accepted = RemoteQueryAccepted.model_validate(
+        {
+            "job_id": "job-1",
+            "status": "queued",
+            "facility_id": "alcf",
+            "facility_display_name": "ALCF",
+            "resource_id": "polaris",
+            "resource_display_name": "Polaris",
+            "facility_job_id": "12345",
+        }
+    )
+    status = RemoteQueryStatus.model_validate(
+        {
+            "job_id": "job-1",
+            "status": "running",
+            "facility_id": "alcf",
+            "facility_display_name": "ALCF",
+            "resource_id": "polaris",
+            "resource_display_name": "Polaris",
+            "facility_job_id": "12345",
+        }
+    )
+
+    assert accepted.facility_display_name == "ALCF"
+    assert accepted.resource_display_name == "Polaris"
+    assert status.facility_id == "alcf"
+    assert status.resource_id == "polaris"
 
 
 def test_remote_query_request_accepts_file_collection_source_kind():
