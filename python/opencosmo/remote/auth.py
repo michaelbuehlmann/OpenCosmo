@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 from dataclasses import replace
 from typing import TYPE_CHECKING, Literal
 from urllib import request
@@ -47,6 +48,20 @@ class _RemoteAuthMetadata(BaseModel):
     session_required_policies: tuple[str, ...] = ()
 
 
+class PendingInteractiveLogin(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    base_url: str
+    auth_client_id: str
+    required_scope: str
+    dependent_scopes: tuple[str, ...] = ()
+    session_required_policies: tuple[str, ...] = ()
+    requested_scopes: tuple[str, ...]
+    redirect_uri: str
+    verifier: str
+    authorize_url: str
+
+
 def login(
     token: str | None = None,
     *,
@@ -59,61 +74,14 @@ def login(
     base_url = normalize_base_url(profile.base_url)
 
     if token is None:
-        metadata = _auth_metadata(profile)
-        requested_scopes = _requested_scopes(metadata)
-
-        globus_sdk = _get_globus_sdk()
-        auth_client = globus_sdk.NativeAppAuthClient(profile.auth_client_id)
-        auth_client.oauth2_start_flow(
-            requested_scopes=requested_scopes,
-            redirect_uri=_AUTH_CODE_REDIRECT_URI,
-            refresh_tokens=True,
-        )
-        authorize_url_params = {}
-        if metadata.session_required_policies:
-            authorize_url_params = {
-                "session_required_policies": metadata.session_required_policies,
-                "prompt": "login",
-            }
-        authorize_url = auth_client.oauth2_get_authorize_url(**authorize_url_params)
+        pending = start_interactive_login()
         print(
             "Open this URL in your browser to authorize OpenCosmo Remote:\n"
-            f"{authorize_url}"
+            f"{pending.authorize_url}"
         )
         if auth_code is None:
             auth_code = input("Enter the Globus authorization code: ").strip()
-        if not auth_code:
-            raise RemoteError("No authorization code provided.")
-
-        try:
-            token_response = auth_client.oauth2_exchange_code_for_tokens(auth_code)
-            entry = entry_from_token_response(
-                base_url=base_url,
-                client_id=profile.auth_client_id,
-                required_scope=metadata.required_scope,
-                dependent_scopes=metadata.dependent_scopes,
-                session_required_policies=metadata.session_required_policies,
-                token_response=token_response,
-            )
-        except ValueError as exc:
-            raise RemoteError(str(exc)) from exc
-        except Exception as exc:
-            raise RemoteError(
-                "Interactive remote login failed during Globus token exchange."
-            ) from exc
-
-        put_entry(profile.auth_storage_path, entry)
-        configure(replace(profile, token=None))
-        return AuthStatus(
-            authenticated=True,
-            message="Stored remote login completed.",
-            base_url=base_url,
-            token_source="stored",
-            required_scope=entry.required_scope,
-            dependent_scopes=entry.dependent_scopes,
-            session_required_policies=entry.session_required_policies,
-            expires_at=entry.expires_at,
-        )
+        return finish_interactive_login(pending, auth_code=auth_code)
 
     configure(replace(profile, token=token))
     return AuthStatus(
@@ -190,6 +158,88 @@ def reauth(
     """
     logout()
     return login(token=token, auth_code=auth_code)
+
+
+def start_interactive_login() -> PendingInteractiveLogin:
+    profile = get_profile()
+    metadata = _auth_metadata(profile)
+    requested_scopes = _requested_scopes(metadata)
+
+    globus_sdk = _get_globus_sdk()
+    auth_client = globus_sdk.NativeAppAuthClient(profile.auth_client_id)
+    verifier = secrets.token_urlsafe(64)
+    auth_client.oauth2_start_flow(
+        requested_scopes=requested_scopes,
+        redirect_uri=_AUTH_CODE_REDIRECT_URI,
+        refresh_tokens=True,
+        verifier=verifier,
+    )
+    authorize_url_params = {}
+    if metadata.session_required_policies:
+        authorize_url_params = {
+            "session_required_policies": metadata.session_required_policies,
+            "prompt": "login",
+        }
+    authorize_url = auth_client.oauth2_get_authorize_url(**authorize_url_params)
+    return PendingInteractiveLogin(
+        base_url=normalize_base_url(profile.base_url),
+        auth_client_id=profile.auth_client_id,
+        required_scope=metadata.required_scope,
+        dependent_scopes=metadata.dependent_scopes,
+        session_required_policies=metadata.session_required_policies,
+        requested_scopes=requested_scopes,
+        redirect_uri=_AUTH_CODE_REDIRECT_URI,
+        verifier=verifier,
+        authorize_url=authorize_url,
+    )
+
+
+def finish_interactive_login(
+    pending: PendingInteractiveLogin,
+    *,
+    auth_code: str,
+) -> AuthStatus:
+    if not auth_code.strip():
+        raise RemoteError("No authorization code provided.")
+
+    profile = get_profile()
+    globus_sdk = _get_globus_sdk()
+    auth_client = globus_sdk.NativeAppAuthClient(pending.auth_client_id)
+    auth_client.oauth2_start_flow(
+        requested_scopes=pending.requested_scopes,
+        redirect_uri=pending.redirect_uri,
+        refresh_tokens=True,
+        verifier=pending.verifier,
+    )
+    try:
+        token_response = auth_client.oauth2_exchange_code_for_tokens(auth_code.strip())
+        entry = entry_from_token_response(
+            base_url=pending.base_url,
+            client_id=pending.auth_client_id,
+            required_scope=pending.required_scope,
+            dependent_scopes=pending.dependent_scopes,
+            session_required_policies=pending.session_required_policies,
+            token_response=token_response,
+        )
+    except ValueError as exc:
+        raise RemoteError(str(exc)) from exc
+    except Exception as exc:
+        raise RemoteError(
+            "Interactive remote login failed during Globus token exchange."
+        ) from exc
+
+    put_entry(profile.auth_storage_path, entry)
+    configure(replace(profile, token=None))
+    return AuthStatus(
+        authenticated=True,
+        message="Stored remote login completed.",
+        base_url=entry.base_url,
+        token_source="stored",
+        required_scope=entry.required_scope,
+        dependent_scopes=entry.dependent_scopes,
+        session_required_policies=entry.session_required_policies,
+        expires_at=entry.expires_at,
+    )
 
 
 def _auth_metadata(profile: RemoteProfile) -> _RemoteAuthMetadata:

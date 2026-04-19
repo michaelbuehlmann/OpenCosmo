@@ -1099,6 +1099,10 @@ def test_remote_auth_interactive_login_stores_refreshable_auth(
 
     monkeypatch.setattr("opencosmo.remote.auth.request.urlopen", urlopen)
     monkeypatch.setattr("opencosmo.remote.auth._get_globus_sdk", lambda: FakeGlobusSDK)
+    monkeypatch.setattr(
+        "opencosmo.remote.auth.secrets.token_urlsafe",
+        lambda _n: "pkce-verifier",
+    )
     monkeypatch.setattr("builtins.input", lambda prompt: "auth-code")
 
     status = oc.remote.auth.login()
@@ -1121,7 +1125,18 @@ def test_remote_auth_interactive_login_stores_refreshable_auth(
             ),
             "redirect_uri": "https://auth.globus.org/v2/web/auth-code",
             "refresh_tokens": True,
-        }
+            "verifier": "pkce-verifier",
+        },
+        {
+            "requested_scopes": (
+                "scope://remote",
+                "scope://facility",
+                "scope://extra",
+            ),
+            "redirect_uri": "https://auth.globus.org/v2/web/auth-code",
+            "refresh_tokens": True,
+            "verifier": "pkce-verifier",
+        },
     ]
     assert authorize_url_params == [
         {
@@ -1141,6 +1156,145 @@ def test_remote_auth_interactive_login_stores_refreshable_auth(
     assert stored["entries"]["https://example.test"]["session_required_policies"] == [
         "policy-1"
     ]
+
+
+def test_remote_auth_start_interactive_login_returns_serializable_pending_state(
+    monkeypatch, tmp_path
+):
+    storage_path = tmp_path / "remote-auth.json"
+    profile = oc.remote.RemoteProfile(
+        base_url="https://example.test/",
+        auth_storage_path=storage_path,
+    )
+    oc.remote.configure(profile)
+
+    def urlopen(req, timeout=None, context=None):
+        assert req.full_url == (
+            "https://example.test/.well-known/opencosmo-remote-auth"
+        )
+        return _Response(
+            json.dumps(
+                {
+                    "auth_provider": "globus",
+                    "required_scope": "scope://remote",
+                    "dependent_scopes": ["scope://facility", "scope://facility"],
+                    "session_required_policies": ["policy-1"],
+                }
+            ).encode()
+        )
+
+    observed = {"start_flow": [], "authorize_params": []}
+
+    class FakeNativeAppAuthClient:
+        def __init__(self, client_id):
+            assert client_id == DEFAULT_AUTH_CLIENT_ID
+
+        def oauth2_start_flow(self, **kwargs):
+            observed["start_flow"].append(kwargs)
+
+        def oauth2_get_authorize_url(self, **kwargs):
+            observed["authorize_params"].append(kwargs)
+            return "https://auth.globus.org/authorize?scope=scope://remote"
+
+    class FakeGlobusSDK:
+        NativeAppAuthClient = FakeNativeAppAuthClient
+
+    monkeypatch.setattr("opencosmo.remote.auth.request.urlopen", urlopen)
+    monkeypatch.setattr("opencosmo.remote.auth._get_globus_sdk", lambda: FakeGlobusSDK)
+    monkeypatch.setattr(
+        "opencosmo.remote.auth.secrets.token_urlsafe",
+        lambda _n: "pkce-verifier",
+    )
+
+    pending = oc.remote.auth.start_interactive_login()
+
+    assert pending.base_url == "https://example.test"
+    assert pending.auth_client_id == DEFAULT_AUTH_CLIENT_ID
+    assert pending.required_scope == "scope://remote"
+    assert pending.dependent_scopes == ("scope://facility",)
+    assert pending.session_required_policies == ("policy-1",)
+    assert pending.requested_scopes == ("scope://remote", "scope://facility")
+    assert pending.redirect_uri == "https://auth.globus.org/v2/web/auth-code"
+    assert pending.verifier == "pkce-verifier"
+    assert pending.authorize_url == "https://auth.globus.org/authorize?scope=scope://remote"
+    assert observed["start_flow"] == [
+        {
+            "requested_scopes": ("scope://remote", "scope://facility"),
+            "redirect_uri": "https://auth.globus.org/v2/web/auth-code",
+            "refresh_tokens": True,
+            "verifier": "pkce-verifier",
+        }
+    ]
+    assert observed["authorize_params"] == [
+        {
+            "session_required_policies": ("policy-1",),
+            "prompt": "login",
+        }
+    ]
+
+
+def test_remote_auth_finish_interactive_login_uses_verifier_and_stores_auth(
+    monkeypatch, tmp_path
+):
+    storage_path = tmp_path / "remote-auth.json"
+    profile = oc.remote.RemoteProfile(
+        base_url="https://example.test",
+        auth_storage_path=storage_path,
+    )
+    oc.remote.configure(profile)
+
+    flow_started = []
+
+    class FakeNativeAppAuthClient:
+        def __init__(self, client_id):
+            assert client_id == DEFAULT_AUTH_CLIENT_ID
+
+        def oauth2_start_flow(self, **kwargs):
+            flow_started.append(kwargs)
+
+        def oauth2_exchange_code_for_tokens(self, code):
+            assert code == "auth-code"
+            return _token_response(
+                access_token="stored-token",
+                refresh_token="refresh-token",
+                scope="scope://remote scope://facility",
+                expires_at=int(time.time()) + 3600,
+            )
+
+    class FakeGlobusSDK:
+        NativeAppAuthClient = FakeNativeAppAuthClient
+
+    monkeypatch.setattr("opencosmo.remote.auth._get_globus_sdk", lambda: FakeGlobusSDK)
+
+    pending = oc.remote.auth.PendingInteractiveLogin(
+        base_url="https://example.test",
+        auth_client_id=DEFAULT_AUTH_CLIENT_ID,
+        required_scope="scope://remote",
+        dependent_scopes=("scope://facility",),
+        requested_scopes=("scope://remote", "scope://facility"),
+        redirect_uri="https://auth.globus.org/v2/web/auth-code",
+        verifier="pkce-verifier",
+        authorize_url="https://auth.globus.org/authorize",
+    )
+
+    status = oc.remote.auth.finish_interactive_login(pending, auth_code=" auth-code ")
+
+    assert status.authenticated
+    assert status.token_source == "stored"
+    assert status.base_url == "https://example.test"
+    assert status.required_scope == "scope://remote"
+    assert status.dependent_scopes == ("scope://facility",)
+    assert flow_started == [
+        {
+            "requested_scopes": ("scope://remote", "scope://facility"),
+            "redirect_uri": "https://auth.globus.org/v2/web/auth-code",
+            "refresh_tokens": True,
+            "verifier": "pkce-verifier",
+        }
+    ]
+    stored = json.loads(storage_path.read_text())
+    assert stored["entries"]["https://example.test"]["access_token"] == "stored-token"
+    assert stored["entries"]["https://example.test"]["refresh_token"] == "refresh-token"
 
 
 def test_remote_auth_interactive_login_omits_prompt_without_session_policies(
